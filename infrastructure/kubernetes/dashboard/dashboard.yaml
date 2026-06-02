@@ -1,0 +1,172 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dashboard
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard
+  namespace: dashboard
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/devops-agent-test-dashboard-role"
+---
+# RBAC: Dashboard needs to execute kubectl commands in dockercoins namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dashboard-scenario-runner
+rules:
+  # Pod operations (exec, logs, get, list, delete)
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Deployment operations (scale, get, apply)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Service operations
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "events"]
+    verbs: ["get", "list", "watch"]
+  # NetworkPolicy for network scenarios
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dashboard-scenario-runner-binding
+subjects:
+  - kind: ServiceAccount
+    name: dashboard
+    namespace: dashboard
+roleRef:
+  kind: ClusterRole
+  name: dashboard-scenario-runner
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-config
+  namespace: dashboard
+data:
+  EKS_CLUSTER_NAME: "devops-agent-test-cluster"
+  AWS_REGION: "us-east-1"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: dashboard
+  labels:
+    app: dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      serviceAccountName: dashboard
+      containers:
+      - name: simulator
+        image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/dashboard
+        command: ["gunicorn"]
+        args: ["--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "app:app"]
+        ports:
+        - containerPort: 8080
+          name: simulator
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        envFrom:
+        - configMapRef:
+            name: dashboard-config
+        volumeMounts:
+        - name: results
+          mountPath: /app/results
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      - name: overview
+        image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/dashboard
+        command: ["gunicorn"]
+        args: ["--bind", "0.0.0.0:5003", "--workers", "1", "--threads", "8", "overview_app:app"]
+        ports:
+        - containerPort: 5003
+          name: overview
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: SIMULATOR_URL
+          value: "http://localhost:8080"
+        envFrom:
+        - configMapRef:
+            name: dashboard-config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5003
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5003
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: results
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: dashboard
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+spec:
+  type: LoadBalancer
+  selector:
+    app: dashboard
+  ports:
+  - name: simulator
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  - name: overview
+    port: 5003
+    targetPort: 5003
+    protocol: TCP

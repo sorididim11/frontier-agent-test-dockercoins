@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: splunk-mcp-server
+  namespace: splunk
+  labels:
+    app: splunk-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: splunk-mcp-server
+  template:
+    metadata:
+      labels:
+        app: splunk-mcp-server
+    spec:
+      containers:
+        - name: mcp-server
+          image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/splunk-mcp-server:streamable-http-v10
+          command: ["uv", "run", "python", "src/server.py", "--port", "8443"]
+          ports:
+            - name: https
+              containerPort: 8443
+          env:
+            - name: SPLUNK_HOST
+              value: "splunk.splunk.svc.cluster.local"
+            - name: SPLUNK_PORT
+              value: "443"
+            - name: SPLUNK_USERNAME
+              value: "admin"
+            - name: SPLUNK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: splunk-credentials
+                  key: SPLUNK_PASSWORD
+            - name: SPLUNK_VERIFY_SSL
+              value: "false"
+            - name: MCP_SERVER_HOST
+              value: "0.0.0.0"
+            - name: MCP_SERVER_PORT
+              value: "8443"
+            - name: MCP_LOG_LEVEL
+              value: "INFO"
+            - name: MCP_SERVER_MODE
+              value: "docker"
+            - name: MCP_STATELESS_HTTP
+              value: "true"
+            - name: MCP_JSON_RESPONSE
+              value: "true"
+            - name: MCP_AUTH_DISABLED
+              value: "true"
+            - name: SSL_CERTFILE
+              value: "/app/cert.pem"
+            - name: SSL_KEYFILE
+              value: "/app/key.pem"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: splunk-mcp-server
+  namespace: splunk
+  labels:
+    app: splunk-mcp-server
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+spec:
+  type: LoadBalancer
+  selector:
+    app: splunk-mcp-server
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+      protocol: TCP

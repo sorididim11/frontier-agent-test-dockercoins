@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Route53 Private Hosted Zone for Security Agent Pentest Domain Verification'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name (passed by deploy.sh)
+
+  DomainName:
+    Type: String
+    Default: 'es-devops-agent.com'
+    Description: Private domain name for pentest target
+
+  WebUIElbDns:
+    Type: String
+    Description: 'K8s webui LoadBalancer ELB DNS (kubectl get svc -n dockercoins webui)'
+
+  DomainVerificationToken:
+    Type: String
+    Description: 'Security Agent domain verification token (from create-target-domain)'
+
+Resources:
+  PrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref DomainName
+      VPCs:
+        - VPCId:
+            Fn::ImportValue: !Sub '${ProjectName}-vpc-id'
+          VPCRegion: !Ref AWS::Region
+      HostedZoneConfig:
+        Comment: !Sub 'Private zone for ${DomainName} - Security Agent pentest target'
+      HostedZoneTags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-private-zone'
+        - Key: Environment
+          Value: !Ref ProjectName
+        - Key: auto-delete
+          Value: 'never'
+
+  # webui.es-devops-agent.com → K8s ELB
+  WebUICnameRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PrivateHostedZone
+      Name: !Sub 'webui.${DomainName}'
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !Ref WebUIElbDns
+
+  # Security Agent domain verification TXT record
+  DomainVerificationRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PrivateHostedZone
+      Name: !Sub '_aws_securityagent-challenge.webui.${DomainName}'
+      Type: TXT
+      TTL: '300'
+      ResourceRecords:
+        - !Sub '"${DomainVerificationToken}"'
+
+Outputs:
+  HostedZoneId:
+    Description: Private Hosted Zone ID
+    Value: !Ref PrivateHostedZone
+    Export:
+      Name: !Sub '${ProjectName}-private-zone-id'
+
+  DomainName:
+    Description: Private domain name
+    Value: !Ref DomainName
+    Export:
+      Name: !Sub '${ProjectName}-domain-name'
+
+  WebUIEndpoint:
+    Description: WebUI endpoint for pentest
+    Value: !Sub 'http://webui.${DomainName}'

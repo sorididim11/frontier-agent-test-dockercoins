@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/dockercoins
+
+images:
+  - name: hasher
+    newName: ${ECR_PREFIX}/hasher
+    newTag: "${HASHER_TAG}"
+  - name: rng
+    newName: ${ECR_PREFIX}/rng
+    newTag: "${RNG_TAG}"
+  - name: worker
+    newName: ${ECR_PREFIX}/worker
+    newTag: "${WORKER_TAG}"
+  - name: webui
+    newName: ${ECR_PREFIX}/webui
+    newTag: "${WEBUI_TAG}"
+
+patches:
+  - target:
+      kind: Deployment
+      name: rng
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "${RDS_ENDPOINT}"
+  - target:
+      kind: CronJob
+      name: investigation-cleanup
+    patch: |
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/1/value
+        value: "${PROJECT_NAME}-investigation-events"
+  - target:
+      kind: ServiceAccount
+      name: investigation-cleanup
+    patch: |
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "${CLEANUP_ROLE_ARN}"

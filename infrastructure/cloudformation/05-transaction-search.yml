@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Test - X-Ray Transaction Search for Application Signals (Ruby/PHP/GoLang support)'
+
+# Transaction Search is required for languages without ADOT SDK:
+# - Ruby, PHP, GoLang use standard OpenTelemetry SDK
+# - Transaction Search enables Application Signals metrics from traces
+# Reference: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Application-Signals-supportmatrix.html
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name (passed by deploy.sh)
+
+  IndexingPercentage:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 100
+    Description: Percentage of spans to index as trace summaries (1% is free tier)
+
+Resources:
+  # Resource Policy to allow X-Ray to send traces to CloudWatch Logs
+  TransactionSearchLogsResourcePolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-transaction-search-access'
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "TransactionSearchXRayAccess",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "xray.amazonaws.com"
+              },
+              "Action": "logs:PutLogEvents",
+              "Resource": [
+                "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:aws/spans:*",
+                "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/application-signals/data:*"
+              ],
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": "arn:${AWS::Partition}:xray:${AWS::Region}:${AWS::AccountId}:*"
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": "${AWS::AccountId}"
+                }
+              }
+            }
+          ]
+        }
+
+  # X-Ray Transaction Search Configuration
+  # This enables spans to be sent to CloudWatch Logs for Application Signals
+  XRayTransactionSearchConfig:
+    Type: AWS::XRay::TransactionSearchConfig
+    DependsOn: TransactionSearchLogsResourcePolicy
+    Properties:
+      IndexingPercentage: !Ref IndexingPercentage
+
+Outputs:
+  TransactionSearchStatus:
+    Description: Transaction Search is enabled - verify with 'aws xray get-trace-segment-destination'
+    Value: 'Enabled - Destination should be CloudWatchLogs'
+    Export:
+      Name: !Sub '${ProjectName}-transaction-search-status'
+  
+  IndexingPercentage:
+    Description: Percentage of spans indexed as trace summaries
+    Value: !Ref IndexingPercentage
+    Export:
+      Name: !Sub '${ProjectName}-transaction-search-indexing-percentage'

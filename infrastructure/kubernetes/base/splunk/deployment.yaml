@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: splunk
+  namespace: splunk
+  labels:
+    app: splunk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: splunk
+  template:
+    metadata:
+      labels:
+        app: splunk
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: splunk
+          image: splunk/splunk:latest
+          ports:
+            - name: web
+              containerPort: 8000
+            - name: mgmt
+              containerPort: 8089
+            - name: hec
+              containerPort: 8088
+          env:
+            - name: SPLUNK_START_ARGS
+              value: "--accept-license"
+            - name: SPLUNK_GENERAL_TERMS
+              value: "--accept-sgt-current-at-splunk-com"
+            - name: SPLUNK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: splunk-credentials
+                  key: SPLUNK_PASSWORD
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          readinessProbe:
+            tcpSocket:
+              port: 8089
+            initialDelaySeconds: 120
+            periodSeconds: 15
+          livenessProbe:
+            tcpSocket:
+              port: 8089
+            initialDelaySeconds: 240
+            periodSeconds: 30
+          volumeMounts:
+            - name: splunk-data
+              mountPath: /opt/splunk/var
+      volumes:
+        - name: splunk-data
+          emptyDir: {}

@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+<head>
+<title>DockerCoins - Admin Panel</title>
+<script src="jquery.js"></script>
+<style>
+body { font-family: sans-serif; margin: 40px auto; max-width: 900px; }
+nav { background: #333; padding: 10px; margin-bottom: 20px; }
+nav a { color: #fff; margin-right: 15px; text-decoration: none; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 0.9em; }
+th { background: #f5f5f5; }
+.section { margin-bottom: 30px; }
+.form-group { margin-bottom: 10px; }
+input[type="text"], input[type="url"] { width: 70%; padding: 8px; }
+button { padding: 8px 16px; background: steelblue; color: white; border: none; cursor: pointer; margin: 2px; }
+button.danger { background: #c0392b; }
+pre { background: #f5f5f5; padding: 10px; overflow-x: auto; max-height: 300px; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/board">Board</a>
+  <a href="/admin">Admin</a>
+  <a href="/login">Login</a>
+</nav>
+
+<h1>Admin Panel</h1>
+
+<div class="section">
+  <h2>Users</h2>
+  <table id="users-table">
+    <thead><tr><th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Password</th><th>API Key</th><th>Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>System Command</h2>
+  <div class="form-group">
+    <input type="text" id="cmd-input" placeholder="Enter command (e.g., ls -la)">
+    <button onclick="runCommand()">Execute</button>
+  </div>
+  <pre id="cmd-output">Output will appear here...</pre>
+</div>
+
+<div class="section">
+  <h2>URL Fetcher</h2>
+  <div class="form-group">
+    <input type="url" id="url-input" placeholder="Enter URL to fetch">
+    <button onclick="fetchUrl()">Fetch</button>
+  </div>
+  <pre id="url-output">Response will appear here...</pre>
+</div>
+
+<div class="section">
+  <h2>Debug Info</h2>
+  <button onclick="loadDebug()">Load Debug Info</button>
+  <pre id="debug-output"></pre>
+</div>
+
+<div class="section">
+  <h2>Data Import</h2>
+  <div class="form-group">
+    <input type="text" id="import-input" placeholder='Serialized data (JSON)'>
+    <button onclick="importData()">Import</button>
+  </div>
+  <pre id="import-output"></pre>
+</div>
+
+<div class="section">
+  <h2>Export File</h2>
+  <div class="form-group">
+    <input type="text" id="export-input" placeholder="Filename (e.g., /etc/passwd)">
+    <button onclick="exportFile()">Export</button>
+  </div>
+  <pre id="export-output"></pre>
+</div>
+
+<script>
+// Load users
+$.getJSON('/admin/users', function(users) {
+  users.forEach(function(u) {
+    var row = '<tr><td>'+u.id+'</td><td>'+u.username+'</td><td>'+u.email+'</td><td>'+u.role+'</td><td>'+u.password+'</td><td>'+u.api_key+'</td>';
+    row += '<td><button class="danger" onclick="deleteUser('+u.id+')">Delete</button></td></tr>';
+    $('#users-table tbody').append(row);
+  });
+});
+
+function deleteUser(id) {
+  $.post('/admin/delete-user', { userId: id }, function() {
+    location.reload();
+  });
+}
+
+function runCommand() {
+  var cmd = $('#cmd-input').val();
+  $.post('/admin/run', { cmd: cmd }, function(data) {
+    $('#cmd-output').text(data.output || JSON.stringify(data));
+  }).fail(function(xhr) {
+    $('#cmd-output').text(xhr.responseText);
+  });
+}
+
+function fetchUrl() {
+  var url = $('#url-input').val();
+  $.post('/api/fetch-url', { url: url }, function(data) {
+    $('#url-output').text(JSON.stringify(data, null, 2));
+  }).fail(function(xhr) {
+    $('#url-output').text(xhr.responseText);
+  });
+}
+
+function loadDebug() {
+  $.getJSON('/admin/debug', function(data) {
+    $('#debug-output').text(JSON.stringify(data, null, 2));
+  });
+}
+
+function importData() {
+  var data = $('#import-input').val();
+  $.post('/api/import', { data: data }, function(resp) {
+    $('#import-output').text(JSON.stringify(resp, null, 2));
+  }).fail(function(xhr) {
+    $('#import-output').text(xhr.responseText);
+  });
+}
+
+function exportFile() {
+  var file = $('#export-input').val();
+  $.get('/api/export', { file: file }, function(data) {
+    $('#export-output').text(typeof data === 'object' ? JSON.stringify(data) : data);
+  }).fail(function(xhr) {
+    $('#export-output').text(xhr.responseText);
+  });
+}
+</script>
+</body>
+</html>

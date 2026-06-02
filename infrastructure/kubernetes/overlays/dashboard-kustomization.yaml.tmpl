@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/dashboard
+
+images:
+  - name: dashboard
+    newName: ${ECR_PREFIX}/dashboard
+    newTag: "${DASHBOARD_TAG}"
+
+patches:
+  - target:
+      kind: ServiceAccount
+      name: dashboard
+    patch: |
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${PROJECT_NAME}-dashboard-role"
+  - target:
+      kind: ConfigMap
+      name: dashboard-config
+    patch: |
+      - op: replace
+        path: /data/EKS_CLUSTER_NAME
+        value: "${PROJECT_NAME}-cluster"
+      - op: replace
+        path: /data/EVENTS_TABLE
+        value: "${PROJECT_NAME}-investigation-events"
+      - op: replace
+        path: /data/RUNS_TABLE
+        value: "${PROJECT_NAME}-scenario-runs"
+      - op: replace
+        path: /data/SLACK_SECRET_NAME
+        value: "${PROJECT_NAME}-slack-bot-token"
+      - op: replace
+        path: /data/WEBHOOK_SECRET_NAME
+        value: "${PROJECT_NAME}-devops-agent-webhook"
+      - op: replace
+        path: /data/WEBHOOK_FUNCTION_NAME
+        value: "${PROJECT_NAME}-alarm-to-webhook"
+      - op: replace
+        path: /data/ALARM_PREFIX
+        value: "${PROJECT_NAME}"
+      - op: replace
+        path: /data/PROJECT_NAME
+        value: "${PROJECT_NAME}"

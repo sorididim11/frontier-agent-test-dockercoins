@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cross-Account DevOps Agent — IAM Role + EKS AccessEntry for primary Agent Space monitoring'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test-m2'
+    Description: This account project name (for EKS cluster naming)
+  Environment:
+    Type: String
+    Default: 'devops-agent-test-m2'
+  PrimaryAccountId:
+    Type: String
+    Description: 'Account ID where the Agent Space lives (e.g. 111111111111)'
+    AllowedPattern: '[0-9]{12}'
+  PrimaryProjectName:
+    Type: String
+    Description: 'Project name in the primary account (e.g. devops-agent-test)'
+
+Resources:
+  CrossAccountDevOpsAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-devops-agent-xaccount-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: aidevops.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref PrimaryAccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:aidevops:*:${PrimaryAccountId}:agentspace/*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy
+      Policies:
+        - PolicyName: DevOpsAgentApiPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AgentSpaceApi
+                Effect: Allow
+                Action:
+                  - aidevops:ListChats
+                  - aidevops:CreateChat
+                  - aidevops:SendMessage
+                  - aidevops:ListExecutions
+                  - aidevops:ListJournalRecords
+                  - aidevops:GetAgentSpace
+                  - aidevops:ListAssociations
+                  - aidevops:GetAssociation
+                  - aidevops:DiscoverTopology
+                  - aidevops:ListGoals
+                  - aidevops:ListRecommendations
+                  - aidevops:GetRecommendation
+                  - aidevops:ListBacklogTasks
+                  - aidevops:GetBacklogTask
+                  - aidevops:ListKnowledgeItems
+                  - aidevops:GetKnowledgeItem
+                Resource: !Sub 'arn:aws:aidevops:*:${PrimaryAccountId}:agentspace/*'
+              - Sid: LogsSupplemental
+                Effect: Allow
+                Action:
+                  - logs:GetLogEvents
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-devops-agent-xaccount-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DevOpsAgent
+        - Key: auto-delete
+          Value: 'never'
+
+  CrossAccountAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      PrincipalArn: !GetAtt CrossAccountDevOpsAgentRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy
+          AccessScope:
+            Type: cluster
+      Tags:
+        - Key: App
+          Value: DevOpsAgent
+        - Key: auto-delete
+          Value: 'never'
+
+Outputs:
+  CrossAccountRoleArn:
+    Description: Cross-account DevOps Agent Role ARN
+    Value: !GetAtt CrossAccountDevOpsAgentRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-devops-agent-xaccount-role-arn'

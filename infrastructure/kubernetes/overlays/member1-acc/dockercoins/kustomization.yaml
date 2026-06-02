@@ -1,0 +1,58 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/dockercoins
+
+images:
+  - name: hasher
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/hasher
+    newTag: "test-sha-abc123"
+  - name: worker
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/worker
+    newTag: "test-sha-abc123"
+  - name: webui
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/webui
+    newTag: "test-sha-abc123"
+
+patches:
+  # rng는 member2 전용 — primary에서 Deployment+Service 제거
+  - target:
+      kind: Deployment
+      name: rng
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: rng
+      $patch: delete
+  - target:
+      kind: Service
+      name: rng
+    patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: rng
+      $patch: delete
+  - target:
+      kind: CronJob
+      name: investigation-cleanup
+    patch: |
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/1/value
+        value: "devops-agent-test-investigation-events"
+  - target:
+      kind: ServiceAccount
+      name: investigation-cleanup
+    patch: |
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::111111111111:role/devops-agent-test-dashboard-role"
+  - target:
+      kind: ServiceAccount
+      name: fis-experiment-sa
+    patch: |
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::111111111111:role/devops-agent-test-fis-pod-role"

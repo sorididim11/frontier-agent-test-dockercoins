@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<title>DockerCoins - Profile</title>
+<script src="jquery.js"></script>
+<style>
+body { font-family: sans-serif; margin: 40px auto; max-width: 600px; }
+nav { background: #333; padding: 10px; margin-bottom: 20px; }
+nav a { color: #fff; margin-right: 15px; text-decoration: none; }
+.form-group { margin-bottom: 15px; }
+label { display: block; margin-bottom: 5px; font-weight: bold; }
+input[type="text"], input[type="email"] { width: 100%; padding: 8px; box-sizing: border-box; }
+button { padding: 10px 20px; background: steelblue; color: white; border: none; cursor: pointer; }
+pre { background: #f5f5f5; padding: 10px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/board">Board</a>
+  <a href="/admin">Admin</a>
+  <a href="/login">Login</a>
+</nav>
+
+<h1>User Profile</h1>
+
+<div class="form-group">
+  <label>User ID to view (IDOR test)</label>
+  <input type="text" id="user-id" value="1">
+  <button onclick="loadProfile()">Load</button>
+</div>
+
+<pre id="profile-data">Click "Load" to view profile...</pre>
+
+<h2>Update Email</h2>
+<form id="update-form">
+  <div class="form-group">
+    <label>New Email</label>
+    <input type="email" id="new-email" required>
+  </div>
+  <button type="submit">Update</button>
+</form>
+
+<script>
+function loadProfile() {
+  var id = $('#user-id').val();
+  $.getJSON('/profile/' + id, function(data) {
+    $('#profile-data').text(JSON.stringify(data, null, 2));
+  }).fail(function(xhr) {
+    $('#profile-data').text(xhr.responseText);
+  });
+}
+
+$('#update-form').submit(function(e) {
+  e.preventDefault();
+  $.post('/profile/update', { email: $('#new-email').val() }, function(data) {
+    alert('Updated!');
+  }).fail(function(xhr) {
+    alert(xhr.responseJSON ? xhr.responseJSON.error : 'Error');
+  });
+});
+</script>
+</body>
+</html>

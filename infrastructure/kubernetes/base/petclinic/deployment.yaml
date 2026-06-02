@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petclinic
+  namespace: petclinic
+  labels:
+    app: petclinic
+    app.kubernetes.io/name: petclinic
+    app.kubernetes.io/part-of: PetClinic-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: petclinic
+  template:
+    metadata:
+      labels:
+        app: petclinic
+        app.kubernetes.io/name: petclinic
+        app.kubernetes.io/part-of: PetClinic-v2
+      annotations:
+        instrumentation.opentelemetry.io/inject-java: "true"
+    spec:
+      initContainers:
+        - name: otel-agent
+          image: 602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-java:v2.11.5
+          command: ["cp", "/javaagent.jar", "/otel/opentelemetry-javaagent.jar"]
+          volumeMounts:
+            - name: otel-agent
+              mountPath: /otel
+      containers:
+        - name: petclinic
+          image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/spring-petclinic:v1.0.0
+          ports:
+            - containerPort: 8080
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/otel/opentelemetry-javaagent.jar"
+            - name: OTEL_SERVICE_NAME
+              value: "spring-petclinic"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://splunk-otel-collector-agent.splunk-otel.svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+          volumeMounts:
+            - name: otel-agent
+              mountPath: /otel
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+      volumes:
+        - name: otel-agent
+          emptyDir: {}

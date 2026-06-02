@@ -1,0 +1,21 @@
+{
+  "name": "dockercoins-webui",
+  "version": "1.0.0",
+  "description": "DockerCoins Mining Dashboard",
+  "main": "webui.js",
+  "scripts": {
+    "start": "node webui.js"
+  },
+  "dependencies": {
+    "express": "^4.17.1",
+    "redis": "^3.1.2",
+    "better-sqlite3": "^9.0.0",
+    "express-session": "^1.17.3",
+    "body-parser": "^1.20.2",
+    "node-serialize": "0.0.4",
+    "axios": "0.21.0",
+    "ejs": "^3.1.6",
+    "cookie-parser": "^1.4.6",
+    "multer": "^1.4.4"
+  }
+}

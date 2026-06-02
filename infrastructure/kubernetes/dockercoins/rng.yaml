@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rng
+  namespace: dockercoins
+  labels:
+    app: rng
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rng
+  template:
+    metadata:
+      labels:
+        app: rng
+      annotations:
+        # Application Signals auto-instrumentation for Python
+        instrumentation.opentelemetry.io/inject-python: "true"
+    spec:
+      containers:
+      - name: rng
+        image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/rng:20260408-165600
+        ports:
+        - containerPort: 80
+        env:
+        # Database configuration for connection leak testing
+        - name: DB_HOST
+          value: "devops-agent-test-database.craw2q2yeuw4.us-east-1.rds.amazonaws.com"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: "devopsagentdb"
+        - name: DB_USER
+          value: "dbadmin"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: rds-credentials
+              key: password
+              optional: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rng
+  namespace: dockercoins
+spec:
+  selector:
+    app: rng
+  ports:
+  - port: 80
+    targetPort: 80

@@ -1,0 +1,17 @@
+services:
+  overview:
+    build:
+      context: .
+      dockerfile: services/dashboard/Dockerfile
+    ports:
+      - "5004:5003"
+    volumes:
+      - ~/.aws:/root/.aws
+      - ~/.kube:/root/.kube
+      - ./config:/app/config:ro
+      - ./services/dashboard/config.yaml:/app/config.yaml
+    environment:
+      - DASHBOARD_MODE=local
+      - AWS_PROFILE=${AWS_PROFILE:-member2-acc}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - EXPERT_SIDECAR_URL=http://host.docker.internal:3100

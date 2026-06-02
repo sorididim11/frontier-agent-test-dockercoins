@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: build
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kaniko-builder
+  namespace: build
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111111111111:role/devops-agent-test-kaniko-builder
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kaniko-cache
+  namespace: build
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp2
+  resources:
+    requests:
+      storage: 20Gi

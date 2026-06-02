@@ -1,0 +1,400 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Test - AWS FIS Experiment Templates for Chaos Engineering'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name for resource tagging
+
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  EksOidcId:
+    Type: String
+    Description: EKS cluster OIDC provider ID (from cluster identity.oidc.issuer URL)
+
+Resources:
+  # IAM Role for FIS
+  FISRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-fis-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: fis.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSFaultInjectionSimulatorEC2Access
+        - arn:aws:iam::aws:policy/service-role/AWSFaultInjectionSimulatorRDSAccess
+        - arn:aws:iam::aws:policy/service-role/AWSFaultInjectionSimulatorEKSAccess
+        - arn:aws:iam::aws:policy/service-role/AWSFaultInjectionSimulatorNetworkAccess
+      Policies:
+        - PolicyName: FISCloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-fis-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'DockerCoins'
+
+  # EKS Access Entry — FIS needs cluster access for pod-level fault injection
+  FISAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      PrincipalArn: !GetAtt FISRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
+
+  # IRSA role for FIS pod-level actions (ServiceAccount: fis-experiment-sa)
+  FISPodRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-fis-pod-role'
+      AssumeRolePolicyDocument:
+        !Sub |
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "arn:aws:iam::${AWS::AccountId}:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/${EksOidcId}"
+              },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "oidc.eks.us-east-1.amazonaws.com/id/${EksOidcId}:aud": "sts.amazonaws.com",
+                  "oidc.eks.us-east-1.amazonaws.com/id/${EksOidcId}:sub": "system:serviceaccount:dockercoins:fis-experiment-sa"
+                }
+              }
+            }]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-fis-pod-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'DockerCoins'
+
+  # FIS Log Group
+  FISLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/fis/${ProjectName}'
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-fis-logs'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'DockerCoins'
+
+  # Experiment 1: EKS Node Termination
+  EKSNodeTerminationExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: 'Terminate EKS worker node to test pod rescheduling'
+      RoleArn: !GetAtt FISRole.Arn
+      StopConditions:
+        - Source: none
+      Targets:
+        EKSNodes:
+          ResourceType: aws:ec2:instance
+          ResourceTags:
+            eks:cluster-name: !Sub '${ProjectName}-cluster'
+            eks:nodegroup-name: !Sub '${ProjectName}-nodegroup'
+          SelectionMode: COUNT(1)
+      Actions:
+        TerminateNode:
+          ActionId: aws:ec2:terminate-instances
+          Parameters: {}
+          Targets:
+            Instances: EKSNodes
+      LogConfiguration:
+        CloudWatchLogsConfiguration:
+          LogGroupArn: !GetAtt FISLogGroup.Arn
+        LogSchemaVersion: 2
+      Tags:
+        Name: !Sub '${ProjectName}-eks-node-termination'
+        Environment: !Ref Environment
+        Scenario: 'I07-node-failure'
+        App: 'DockerCoins'
+
+  # Experiment 2: RDS Reboot
+  RDSRebootExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: 'Reboot RDS instance to test database failover handling'
+      RoleArn: !GetAtt FISRole.Arn
+      StopConditions:
+        - Source: none
+      Targets:
+        RDSInstance:
+          ResourceType: aws:rds:db
+          ResourceArns:
+            - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${ProjectName}-database'
+          SelectionMode: ALL
+      Actions:
+        RebootDB:
+          ActionId: aws:rds:reboot-db-instances
+          Parameters:
+            forceFailover: 'false'
+          Targets:
+            DBInstances: RDSInstance
+      LogConfiguration:
+        CloudWatchLogsConfiguration:
+          LogGroupArn: !GetAtt FISLogGroup.Arn
+        LogSchemaVersion: 2
+      Tags:
+        Name: !Sub '${ProjectName}-rds-reboot'
+        Environment: !Ref Environment
+        Scenario: 'I08-rds-failover'
+        App: 'DockerCoins'
+
+  # Experiment 3: RDS Failover (Multi-AZ)
+  RDSFailoverExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: 'Force RDS Multi-AZ failover to test application resilience'
+      RoleArn: !GetAtt FISRole.Arn
+      StopConditions:
+        - Source: none
+      Targets:
+        RDSInstance:
+          ResourceType: aws:rds:db
+          ResourceArns:
+            - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${ProjectName}-database'
+          SelectionMode: ALL
+      Actions:
+        FailoverDB:
+          ActionId: aws:rds:reboot-db-instances
+          Parameters:
+            forceFailover: 'true'
+          Targets:
+            DBInstances: RDSInstance
+      LogConfiguration:
+        CloudWatchLogsConfiguration:
+          LogGroupArn: !GetAtt FISLogGroup.Arn
+        LogSchemaVersion: 2
+      Tags:
+        Name: !Sub '${ProjectName}-rds-failover'
+        Environment: !Ref Environment
+        Scenario: 'I09-rds-failover-forced'
+        App: 'DockerCoins'
+
+  # Experiment 4: Network Disruption (Subnet)
+  NetworkDisruptionExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: 'Disrupt network connectivity to test network resilience'
+      RoleArn: !GetAtt FISRole.Arn
+      StopConditions:
+        - Source: none
+      Targets:
+        PrivateSubnets:
+          ResourceType: aws:ec2:subnet
+          ResourceTags:
+            Name: !Sub '${ProjectName}-private-subnet-1'
+          SelectionMode: ALL
+      Actions:
+        DisruptNetwork:
+          ActionId: aws:network:disrupt-connectivity
+          Parameters:
+            duration: PT2M
+            scope: all
+          Targets:
+            Subnets: PrivateSubnets
+      LogConfiguration:
+        CloudWatchLogsConfiguration:
+          LogGroupArn: !GetAtt FISLogGroup.Arn
+        LogSchemaVersion: 2
+      Tags:
+        Name: !Sub '${ProjectName}-network-disruption'
+        Environment: !Ref Environment
+        Scenario: 'I10-network-failure'
+        App: 'DockerCoins'
+
+  # Experiment 5: CPU Stress on EKS Nodes
+  CPUStressExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: 'Inject CPU stress on EKS nodes'
+      RoleArn: !GetAtt FISRole.Arn
+      StopConditions:
+        - Source: none
+      Targets:
+        EKSNodes:
+          ResourceType: aws:ec2:instance
+          ResourceTags:
+            eks:cluster-name: !Sub '${ProjectName}-cluster'
+          SelectionMode: ALL
+      Actions:
+        CPUStress:
+          ActionId: aws:ssm:send-command
+          Parameters:
+            duration: PT12M
+            documentArn: !Sub 'arn:aws:ssm:${AWS::Region}::document/AWSFIS-Run-CPU-Stress'
+            documentParameters: '{"DurationSeconds":"720","CPU":"0"}'
+          Targets:
+            Instances: EKSNodes
+      LogConfiguration:
+        CloudWatchLogsConfiguration:
+          LogGroupArn: !GetAtt FISLogGroup.Arn
+        LogSchemaVersion: 2
+      Tags:
+        Name: !Sub '${ProjectName}-cpu-stress'
+        Environment: !Ref Environment
+        Scenario: 'I11-node-cpu-stress'
+        App: 'DockerCoins'
+
+  # Experiment 6: Memory Stress on EKS Nodes
+  MemoryStressExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: 'Inject memory stress on EKS nodes'
+      RoleArn: !GetAtt FISRole.Arn
+      StopConditions:
+        - Source: none
+      Targets:
+        EKSNodes:
+          ResourceType: aws:ec2:instance
+          ResourceTags:
+            eks:cluster-name: !Sub '${ProjectName}-cluster'
+          SelectionMode: COUNT(1)
+      Actions:
+        MemoryStress:
+          ActionId: aws:ssm:send-command
+          Parameters:
+            duration: PT2M
+            documentArn: !Sub 'arn:aws:ssm:${AWS::Region}::document/AWSFIS-Run-Memory-Stress'
+            documentParameters: '{"DurationSeconds":"120","Percent":"80"}'
+          Targets:
+            Instances: EKSNodes
+      LogConfiguration:
+        CloudWatchLogsConfiguration:
+          LogGroupArn: !GetAtt FISLogGroup.Arn
+        LogSchemaVersion: 2
+      Tags:
+        Name: !Sub '${ProjectName}-memory-stress'
+        Environment: !Ref Environment
+        Scenario: 'I12-node-memory-stress'
+        App: 'DockerCoins'
+
+  # Experiment 7: Hasher Pod Network Latency
+  HasherNetworkLatencyExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: 'Inject network latency on hasher pods to test service resilience'
+      RoleArn: !GetAtt FISRole.Arn
+      StopConditions:
+        - Source: none
+      Targets:
+        HasherPods:
+          ResourceType: aws:eks:pod
+          Parameters:
+            clusterIdentifier: !Sub '${ProjectName}-cluster'
+            namespace: dockercoins
+            selectorType: deploymentName
+            selectorValue: hasher
+          SelectionMode: ALL
+      Actions:
+        InjectLatency:
+          ActionId: aws:eks:pod-network-latency
+          Parameters:
+            duration: PT2M
+            delayMilliseconds: '3000'
+            sources: '0.0.0.0/0'
+            kubernetesServiceAccount: fis-experiment-sa
+          Targets:
+            Pods: HasherPods
+      LogConfiguration:
+        CloudWatchLogsConfiguration:
+          LogGroupArn: !GetAtt FISLogGroup.Arn
+        LogSchemaVersion: 2
+      Tags:
+        Name: !Sub '${ProjectName}-hasher-network-latency'
+        Environment: !Ref Environment
+        Scenario: 'I08-hasher-network-latency'
+        App: 'DockerCoins'
+
+Outputs:
+  FISRoleArn:
+    Description: FIS IAM Role ARN
+    Value: !GetAtt FISRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-fis-role-arn'
+
+  EKSNodeTerminationExperimentId:
+    Description: EKS Node Termination Experiment Template ID
+    Value: !Ref EKSNodeTerminationExperiment
+    Export:
+      Name: !Sub '${ProjectName}-fis-eks-node-termination'
+
+  RDSRebootExperimentId:
+    Description: RDS Reboot Experiment Template ID
+    Value: !Ref RDSRebootExperiment
+    Export:
+      Name: !Sub '${ProjectName}-fis-rds-reboot'
+
+  RDSFailoverExperimentId:
+    Description: RDS Failover Experiment Template ID
+    Value: !Ref RDSFailoverExperiment
+    Export:
+      Name: !Sub '${ProjectName}-fis-rds-failover'
+
+  NetworkDisruptionExperimentId:
+    Description: Network Disruption Experiment Template ID
+    Value: !Ref NetworkDisruptionExperiment
+    Export:
+      Name: !Sub '${ProjectName}-fis-network-disruption'
+
+  CPUStressExperimentId:
+    Description: CPU Stress Experiment Template ID
+    Value: !Ref CPUStressExperiment
+    Export:
+      Name: !Sub '${ProjectName}-fis-cpu-stress'
+
+  MemoryStressExperimentId:
+    Description: Memory Stress Experiment Template ID
+    Value: !Ref MemoryStressExperiment
+    Export:
+      Name: !Sub '${ProjectName}-fis-memory-stress'
+
+  HasherNetworkLatencyExperimentId:
+    Description: Hasher Network Latency Experiment Template ID
+    Value: !Ref HasherNetworkLatencyExperiment
+    Export:
+      Name: !Sub '${ProjectName}-fis-hasher-network-latency'
+

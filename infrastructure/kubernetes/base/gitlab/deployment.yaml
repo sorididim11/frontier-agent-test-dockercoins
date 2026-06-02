@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab
+  namespace: gitlab
+  labels:
+    app: gitlab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab
+  template:
+    metadata:
+      labels:
+        app: gitlab
+    spec:
+      initContainers:
+        - name: generate-cert
+          image: alpine/openssl:latest
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /etc/gitlab/ssl &&
+              openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout /etc/gitlab/ssl/gitlab.key \
+                -out /etc/gitlab/ssl/gitlab.crt \
+                -subj "/CN=gitlab.gitlab.svc.cluster.local"
+          volumeMounts:
+            - name: gitlab-config
+              mountPath: /etc/gitlab
+      containers:
+        - name: gitlab
+          image: gitlab/gitlab-ce:17.0.0-ce.0
+          ports:
+            - name: https
+              containerPort: 443
+            - name: ssh
+              containerPort: 22
+          env:
+            - name: GITLAB_OMNIBUS_CONFIG
+              value: |
+                external_url 'https://gitlab.gitlab.svc.cluster.local'
+                letsencrypt['enable'] = false
+                nginx['ssl_certificate'] = '/etc/gitlab/ssl/gitlab.crt'
+                nginx['ssl_certificate_key'] = '/etc/gitlab/ssl/gitlab.key'
+                nginx['redirect_http_to_https'] = true
+                gitlab_rails['initial_root_password'] = 'PLACEHOLDER_PASSWORD'
+                gitlab_rails['monitoring_whitelist'] = ['0.0.0.0/0']
+                prometheus_monitoring['enable'] = false
+                grafana['enable'] = false
+                alertmanager['enable'] = false
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          readinessProbe:
+            httpGet:
+              path: /-/readiness
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 300
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /-/liveness
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 600
+            periodSeconds: 30
+            timeoutSeconds: 10
+          volumeMounts:
+            - name: gitlab-data
+              mountPath: /var/opt/gitlab
+            - name: gitlab-config
+              mountPath: /etc/gitlab
+      volumes:
+        - name: gitlab-data
+          persistentVolumeClaim:
+            claimName: gitlab-data
+        - name: gitlab-config
+          persistentVolumeClaim:
+            claimName: gitlab-config

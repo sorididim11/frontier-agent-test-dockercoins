@@ -1,0 +1,259 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Test - RDS PostgreSQL Database'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name for resource tagging
+  
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+  
+  DatabaseName:
+    Type: String
+    Default: 'devopsagentdb'
+    Description: Database name
+  
+  DatabaseUsername:
+    Type: String
+    Default: 'dbadmin'
+    Description: Database master username
+  
+  DatabasePassword:
+    Type: String
+    NoEcho: true
+    Description: Database master password
+    MinLength: 8
+    MaxLength: 128
+
+Resources:
+  # Database Subnet Group
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${ProjectName}-db-subnet-group'
+      DBSubnetGroupDescription: Subnet group for RDS database
+      SubnetIds:
+        - Fn::ImportValue: !Sub '${ProjectName}-private-subnet-1-id'
+        - Fn::ImportValue: !Sub '${ProjectName}-private-subnet-2-id'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-db-subnet-group'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DockerCoins
+        - Key: auto-delete
+          Value: 'never'
+
+  # Database Security Group
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-db-sg'
+      GroupDescription: Security group for RDS database
+      VpcId: 
+        Fn::ImportValue: !Sub '${ProjectName}-vpc-id'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: 
+            Fn::ImportValue: !Sub '${ProjectName}-eks-cluster-sg-id'
+          Description: PostgreSQL access from EKS cluster
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.11.0/24
+          Description: PostgreSQL access from Private Subnet 1 (EKS nodes)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.12.0/24
+          Description: PostgreSQL access from Private Subnet 2 (EKS nodes)
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-db-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DockerCoins
+        - Key: auto-delete
+          Value: 'never'
+
+  # RDS Parameter Group
+  DatabaseParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      DBParameterGroupName: !Sub '${ProjectName}-postgres-params'
+      Description: Parameter group for PostgreSQL database
+      Family: postgres18
+      Parameters:
+        shared_preload_libraries: 'pg_stat_statements'
+        log_statement: 'all'
+        log_min_duration_statement: '1000'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-postgres-params'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DockerCoins
+        - Key: auto-delete
+          Value: 'never'
+
+  # RDS Database Instance
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-database'
+      DBName: !Ref DatabaseName
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: '18.1'
+      MasterUsername: !Ref DatabaseUsername
+      MasterUserPassword: !Ref DatabasePassword
+      AllocatedStorage: 20
+      StorageType: gp2
+      StorageEncrypted: true
+      MultiAZ: true
+      PubliclyAccessible: false
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      DBParameterGroupName: !Ref DatabaseParameterGroup
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt DatabaseMonitoringRole.Arn
+      EnableCloudwatchLogsExports:
+        - postgresql
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-database'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DockerCoins
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'database'
+        - Key: Tier
+          Value: 'data'
+
+  # Enhanced Monitoring Role
+  DatabaseMonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-rds-monitoring-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-rds-monitoring-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DockerCoins
+        - Key: auto-delete
+          Value: 'never'
+
+  # CloudWatch Log Groups for RDS
+  DatabaseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/rds/instance/${ProjectName}-database/postgresql'
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-rds-logs'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DockerCoins
+        - Key: auto-delete
+          Value: 'never'
+
+  # Secrets Manager Secret for Database Credentials
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}/database/credentials'
+      Description: Database credentials for DevOps Agent Test
+      SecretString: !Sub '{"username": "${DatabaseUsername}", "password": "${DatabasePassword}", "dbname": "${DatabaseName}", "engine": "postgres", "port": 5432}'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-db-secret'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: DockerCoins
+        - Key: auto-delete
+          Value: 'never'
+
+  # Secret Attachment to RDS Instance
+  DatabaseSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DatabaseSecret
+      TargetId: !Ref DatabaseInstance
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  DatabaseInstanceId:
+    Description: RDS Database Instance ID
+    Value: !Ref DatabaseInstance
+    Export:
+      Name: !Sub '${ProjectName}-database-id'
+  
+  DatabaseEndpoint:
+    Description: RDS Database Endpoint
+    Value: !GetAtt DatabaseInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${ProjectName}-database-endpoint'
+  
+  DatabasePort:
+    Description: RDS Database Port
+    Value: !GetAtt DatabaseInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${ProjectName}-database-port'
+  
+  DatabaseName:
+    Description: Database Name
+    Value: !Ref DatabaseName
+    Export:
+      Name: !Sub '${ProjectName}-database-name'
+  
+  DatabaseSecurityGroupId:
+    Description: Database Security Group ID
+    Value: !Ref DatabaseSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-rds-sg-id'
+  
+  DatabaseSecretArn:
+    Description: Database Secret ARN
+    Value: !Ref DatabaseSecret
+    Export:
+      Name: !Sub '${ProjectName}-database-secret-arn'
+  
+  DatabaseSecretName:
+    Description: Database Secret Name
+    Value: !Ref DatabaseSecret
+    Export:
+      Name: !Sub '${ProjectName}-database-secret-name'

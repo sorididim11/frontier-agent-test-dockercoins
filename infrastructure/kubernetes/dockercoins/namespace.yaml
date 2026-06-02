@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dockercoins
+  labels:
+    app.kubernetes.io/name: dockercoins
+    app.kubernetes.io/part-of: devops-agent-test

@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base/dockercoins
+
+images:
+  - name: hasher
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/hasher
+    newTag: "6ddb3b5ba6b21d622a9fc09d389fcb0560ab11f2"
+  - name: rng
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/rng
+    newTag: "20260408-165600"
+  - name: worker
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/worker
+    newTag: "3297c645eafa0f7e81b77716aaab7bf98155255e"
+  - name: webui
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/webui
+    newTag: "3297c645eafa0f7e81b77716aaab7bf98155255e"

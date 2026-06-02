@@ -1,0 +1,984 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Test - Agent Space, Associations, and CW Alarm Webhook Bridge (v3-fixed)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name for resource tagging
+
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+  SecondaryAccountId:
+    Type: String
+    Default: ''
+    Description: 'Secondary account ID for cross-account monitoring (leave empty to skip)'
+  SecondaryAccountRoleArn:
+    Type: String
+    Default: ''
+    Description: 'Cross-account DevOps Agent role ARN in the secondary account'
+  SecondaryProjectName:
+    Type: String
+    Default: ''
+    Description: 'Project name in the secondary account (for resource ARN construction)'
+
+  # ── GitHub Integration ──
+  GitHubRepoName:
+    Type: String
+    Default: ''
+    Description: 'GitHub repository name (leave empty to skip GitHub association)'
+  GitHubRepoId:
+    Type: String
+    Default: ''
+    Description: 'GitHub integration ID (from AWS console, e.g. i-xxxxxxxx-...)'
+  GitHubOwner:
+    Type: String
+    Default: ''
+    Description: 'GitHub repository owner (org or user name)'
+  GitHubOwnerType:
+    Type: String
+    Default: 'user'
+    AllowedValues: ['organization', 'user']
+    Description: 'GitHub owner type'
+
+  # ── Slack Integration ──
+  SlackWorkspaceId:
+    Type: String
+    Default: ''
+    Description: 'Slack workspace ID e.g. T0XXXXXXX (leave empty to skip Slack association)'
+  SlackWorkspaceName:
+    Type: String
+    Default: ''
+    Description: 'Slack workspace display name'
+  SlackChannelId:
+    Type: String
+    Default: ''
+    Description: 'Slack channel ID for incident response e.g. C0XXXXXXX'
+  SlackChannelName:
+    Type: String
+    Default: ''
+    Description: 'Slack channel name (optional)'
+
+Conditions:
+  HasSecondaryAccount: !Not [!Equals [!Ref SecondaryAccountId, '']]
+  HasGitHub: !Not [!Equals [!Ref GitHubRepoName, '']]
+  HasSlack: !Not [!Equals [!Ref SlackWorkspaceId, '']]
+
+Resources:
+  DevOpsAgentSpace:
+    Type: AWS::DevOpsAgent::AgentSpace
+    Properties:
+      Name: !Sub '${ProjectName}-agent-space'
+      Description: 'Agent Space for DevOps Agent testing'
+      Tags:
+        - Key: App
+          Value: 'DevOpsAgent'
+        - Key: auto-delete
+          Value: 'never'
+
+  DevOpsAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-devops-agent-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: aidevops.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:aidevops:*:${AWS::AccountId}:agentspace/*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy
+      Policies:
+        - PolicyName: DevOpsAgentApiPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AgentSpaceApi
+                Effect: Allow
+                Action:
+                  - aidevops:ListChats
+                  - aidevops:CreateChat
+                  - aidevops:SendMessage
+                  - aidevops:ListExecutions
+                  - aidevops:ListJournalRecords
+                  - aidevops:GetAgentSpace
+                  - aidevops:ListAssociations
+                  - aidevops:GetAssociation
+                  - aidevops:DiscoverTopology
+                  - aidevops:ListGoals
+                  - aidevops:ListRecommendations
+                  - aidevops:GetRecommendation
+                  - aidevops:ListBacklogTasks
+                  - aidevops:GetBacklogTask
+                  - aidevops:ListKnowledgeItems
+                  - aidevops:GetKnowledgeItem
+                Resource: !Sub 'arn:aws:aidevops:*:${AWS::AccountId}:agentspace/*'
+              - Sid: LogsSupplemental
+                Effect: Allow
+                Action:
+                  - logs:GetLogEvents
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-devops-agent-role'
+        - Key: App
+          Value: 'DevOpsAgent'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+
+  MonitorAssociation:
+    Type: AWS::DevOpsAgent::Association
+    Properties:
+      AgentSpaceId: !GetAtt DevOpsAgentSpace.AgentSpaceId
+      ServiceId: 'aws'
+      Configuration:
+        Aws:
+          AccountId: !Ref AWS::AccountId
+          AccountType: 'monitor'
+          AssumableRoleArn: !GetAtt DevOpsAgentRole.Arn
+          Tags:
+            - Key: App
+              Value: 'DockerCoins'
+          Resources:
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectName}-vpc-foundation/*'
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectName}-eks-platform/*'
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectName}-rds-database/*'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}/hasher'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}/rng'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}/worker'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}/webui'
+
+  SourceAccountAssociation:
+    Type: AWS::DevOpsAgent::Association
+    Condition: HasSecondaryAccount
+    Properties:
+      AgentSpaceId: !GetAtt DevOpsAgentSpace.AgentSpaceId
+      ServiceId: 'aws'
+      Configuration:
+        SourceAws:
+          AccountId: !Ref SecondaryAccountId
+          AccountType: 'source'
+          AssumableRoleArn: !Ref SecondaryAccountRoleArn
+          Tags:
+            - Key: App
+              Value: 'DockerCoins'
+          Resources:
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:${AWS::Region}:${SecondaryAccountId}:stack/${SecondaryProjectName}-vpc-foundation/*'
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:${AWS::Region}:${SecondaryAccountId}:stack/${SecondaryProjectName}-eks-platform/*'
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:${AWS::Region}:${SecondaryAccountId}:stack/${SecondaryProjectName}-rds-database/*'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${SecondaryAccountId}:repository/${SecondaryProjectName}/hasher'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${SecondaryAccountId}:repository/${SecondaryProjectName}/rng'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${SecondaryAccountId}:repository/${SecondaryProjectName}/worker'
+            - ResourceType: 'AWS::ECR::Repository'
+              ResourceArn: !Sub 'arn:aws:ecr:${AWS::Region}:${SecondaryAccountId}:repository/${SecondaryProjectName}/webui'
+
+  # ── GitHub Association ──
+  GitHubAssociation:
+    Type: AWS::DevOpsAgent::Association
+    Condition: HasGitHub
+    Properties:
+      AgentSpaceId: !GetAtt DevOpsAgentSpace.AgentSpaceId
+      ServiceId: 'GitHub'
+      Configuration:
+        GitHub:
+          RepoName: !Ref GitHubRepoName
+          RepoId: !Ref GitHubRepoId
+          Owner: !Ref GitHubOwner
+          OwnerType: !Ref GitHubOwnerType
+
+  # ── Slack Association ──
+  SlackAssociation:
+    Type: AWS::DevOpsAgent::Association
+    Condition: HasSlack
+    Properties:
+      AgentSpaceId: !GetAtt DevOpsAgentSpace.AgentSpaceId
+      ServiceId: 'Slack'
+      Configuration:
+        Slack:
+          WorkspaceId: !Ref SlackWorkspaceId
+          WorkspaceName: !Ref SlackWorkspaceName
+          TransmissionTarget:
+            IncidentResponseTarget:
+              ChannelId: !Ref SlackChannelId
+              ChannelName: !Ref SlackChannelName
+
+  # EKS Access Entry for DevOps Agent (K8s API read access)
+  DevOpsAgentAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      PrincipalArn: !GetAtt DevOpsAgentRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy
+          AccessScope:
+            Type: cluster
+      Tags:
+        - Key: App
+          Value: 'DevOpsAgent'
+        - Key: auto-delete
+          Value: 'never'
+
+  WebhookCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}-devops-agent-webhook'
+      Description: 'DevOps Agent Generic Webhook credentials (managed by Custom Resource)'
+      SecretString: '{"webhookUrl":"pending","webhookSecret":"pending"}'
+      Tags:
+        - Key: App
+          Value: 'DevOpsAgent'
+        - Key: auto-delete
+          Value: 'never'
+
+  WebhookSetupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-webhook-setup-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: WebhookSetupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - aidevops:RegisterService
+                  - aidevops:DeregisterService
+                  - aidevops:AssociateService
+                  - aidevops:DisassociateService
+                  - aidevops:UpdateAssociation
+                  - aidevops:ListWebhooks
+                  - aidevops:GetAssociation
+                  - aidevops:ListServices
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:UpdateSecret
+                Resource: !Ref WebhookCredentialsSecret
+      Tags:
+        - Key: App
+          Value: 'DevOpsAgent'
+        - Key: auto-delete
+          Value: 'never'
+
+  WebhookSetupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-webhook-setup'
+      Description: 'Custom Resource: registers eventChannel and creates generic webhook'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt WebhookSetupLambdaRole.Arn
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref WebhookCredentialsSecret
+          API_ENDPOINT: 'https://api.prod.cp.aidevops.us-east-1.api.aws'
+      Tags:
+        - Key: App
+          Value: 'DevOpsAgent'
+        - Key: auto-delete
+          Value: 'never'
+      Code:
+        ZipFile: |
+          import json, os, urllib.request, boto3
+          import botocore.auth, botocore.session
+          from botocore.awsrequest import AWSRequest
+          from urllib.parse import urlparse
+          import cfnresponse
+
+          ENDPOINT = os.environ['API_ENDPOINT']
+          SECRET_ARN = os.environ['SECRET_ARN']
+
+          def signed_request(method, url, body=None):
+              data = json.dumps(body).encode() if body else None
+              parsed = urlparse(url)
+              headers = {'Content-Type': 'application/json', 'Host': parsed.hostname}
+              aws_req = AWSRequest(method=method, url=url, headers=headers, data=data)
+              session = botocore.session.get_session()
+              creds = session.get_credentials().get_frozen_credentials()
+              botocore.auth.SigV4Auth(creds, 'aidevops', 'us-east-1').add_auth(aws_req)
+              return dict(aws_req.headers), data
+
+          def api(method, path, body=None):
+              url = f"{ENDPOINT}{path}"
+              headers, data = signed_request(method, url, body)
+              req = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      t = r.read().decode()
+                      return json.loads(t) if t else {}
+              except urllib.error.HTTPError as e:
+                  err_body = e.read().decode() if e.fp else ''
+                  print(f"API {e.code}: {err_body}")
+                  raise
+
+          def store_creds(wh_url, wh_secret):
+              boto3.client('secretsmanager').put_secret_value(
+                  SecretId=SECRET_ARN,
+                  SecretString=json.dumps({'webhookUrl': wh_url, 'webhookSecret': wh_secret}))
+
+          def find_existing_event_channel():
+              try:
+                  r = api('GET', '/v1/services')
+                  for svc in r.get('services', []):
+                      if svc.get('serviceType') == 'eventChannel':
+                          print(f"Found existing eventChannel: {svc['serviceId']}")
+                          return svc['serviceId']
+              except Exception as e:
+                  print(f"ListServices failed: {e}")
+              return None
+
+          def register_or_reuse():
+              try:
+                  r = api('POST', '/v1/register/eventChannel',
+                      {'serviceDetails': {'eventChannel': {'type': 'webhook'}}})
+                  sid = r['serviceId']
+                  print(f"Registered new: {sid}")
+                  return sid
+              except urllib.error.HTTPError as e:
+                  if e.code == 400:
+                      print("Already registered, looking up existing...")
+                      sid = find_existing_event_channel()
+                      if sid:
+                          return sid
+                      raise Exception("eventChannel registered but not found via ListServices")
+                  raise
+
+          def handler(event, context):
+              print(json.dumps(event))
+              rt = event['RequestType']
+              props = event['ResourceProperties']
+              asid = props['AgentSpaceId']
+              try:
+                  if rt == 'Create':
+                      sid = register_or_reuse()
+                      a = api('POST', f'/v1/agentspaces/{asid}/associations',
+                          {'serviceId': sid, 'configuration': {'eventChannel': {'shouldUpdateWebhook': True}}})
+                      aid = a['association']['associationId']
+                      wh = a.get('webhook', {})
+                      wurl = wh.get('webhookUrl', '')
+                      wsec = wh.get('webhookSecret', '')
+                      wid = wh.get('webhookId', '')
+                      print(f"Associated: {aid}, webhook: {wid}")
+                      if wurl and wsec:
+                          store_creds(wurl, wsec)
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                          {'ServiceId': sid, 'AssociationId': aid, 'WebhookId': wid, 'WebhookUrl': wurl},
+                          physicalResourceId=f"{sid}|{aid}")
+                  elif rt == 'Update':
+                      pid = event.get('PhysicalResourceId', '')
+                      parts = pid.split('|')
+                      if len(parts) == 2:
+                          sid, aid = parts
+                          u = api('PUT', f'/v1/agentspaces/{asid}/associations/{aid}',
+                              {'serviceId': sid, 'configuration': {'eventChannel': {'shouldUpdateWebhook': True}}})
+                          wh = u.get('webhook', {})
+                          if wh.get('webhookUrl') and wh.get('webhookSecret'):
+                              store_creds(wh['webhookUrl'], wh['webhookSecret'])
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                              {'ServiceId': sid, 'AssociationId': aid, 'WebhookUrl': wh.get('webhookUrl', '')},
+                              physicalResourceId=pid)
+                      else:
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physicalResourceId=pid)
+                  elif rt == 'Delete':
+                      pid = event.get('PhysicalResourceId', '')
+                      parts = pid.split('|')
+                      if len(parts) == 2:
+                          sid, aid = parts
+                          try:
+                              api('DELETE', f'/v1/agentspaces/{asid}/associations/{aid}')
+                          except Exception as e:
+                              print(f"Disassociate skip: {e}")
+                          try:
+                              api('DELETE', f'/v1/services/{sid}')
+                          except Exception as e:
+                              print(f"Deregister skip: {e}")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physicalResourceId=pid)
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)},
+                      physicalResourceId=event.get('PhysicalResourceId', 'FAILED'))
+
+  WebhookSetup:
+    Type: Custom::DevOpsAgentWebhook
+    Properties:
+      ServiceToken: !GetAtt WebhookSetupFunction.Arn
+      AgentSpaceId: !GetAtt DevOpsAgentSpace.AgentSpaceId
+
+  WebhookForwarderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-webhook-forwarder-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref WebhookCredentialsSecret
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:webhook-*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt InvestigationEventsTable.Arn
+              - Effect: Allow
+                Action:
+                  - cloudwatch:ListTagsForResource
+                Resource: '*'
+      Tags:
+        - Key: App
+          Value: 'Overview'
+        - Key: auto-delete
+          Value: 'never'
+
+  WebhookForwarderFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: WebhookSetup
+    Properties:
+      FunctionName: !Sub '${ProjectName}-alarm-to-webhook'
+      Description: 'Forwards CW Alarm SNS messages to DevOps Agent Generic Webhook'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt WebhookForwarderRole.Arn
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref WebhookCredentialsSecret
+          EVENTS_TABLE: !Ref InvestigationEventsTable
+      Code:
+        ZipFile: |
+          import json, os, hashlib, hmac, base64, urllib.request, boto3
+          from datetime import datetime, timezone
+
+          cw = boto3.client('cloudwatch')
+          sm = boto3.client('secretsmanager')
+          DEFAULT_SECRET = os.environ.get('SECRET_ARN', '')
+
+          _webhook_cache = {}
+
+          def get_webhook_for_alarm(alarm_arn):
+              """Look up SpaceId tag on alarm → fetch webhook-{SpaceId} from SecretsManager."""
+              try:
+                  tags_resp = cw.list_tags_for_resource(ResourceARN=alarm_arn)
+                  tags = {t['Key']: t['Value'] for t in tags_resp.get('Tags', [])}
+                  space_id = tags.get('SpaceId', '')
+                  if space_id:
+                      cache_key = f"webhook-{space_id}"
+                      if cache_key in _webhook_cache:
+                          return _webhook_cache[cache_key]
+                      r = sm.get_secret_value(SecretId=cache_key)
+                      creds = json.loads(r['SecretString'])
+                      _webhook_cache[cache_key] = creds
+                      return creds
+              except Exception as e:
+                  print(f"SpaceId lookup failed for {alarm_arn}: {e}")
+
+              # Fallback to default webhook
+              if DEFAULT_SECRET:
+                  try:
+                      if 'default' not in _webhook_cache:
+                          r = sm.get_secret_value(SecretId=DEFAULT_SECRET)
+                          _webhook_cache['default'] = json.loads(r['SecretString'])
+                      return _webhook_cache['default']
+                  except Exception as e:
+                      print(f"Default secret failed: {e}")
+              return None
+
+          def forward_to_webhook(creds, payload):
+              """Send HMAC-signed payload to webhook URL."""
+              url = creds.get('webhookUrl', '')
+              secret = creds.get('webhookSecret', '')
+              if not url or not secret:
+                  print("No webhook URL/secret")
+                  return
+              body = json.dumps(payload).encode()
+              sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+              req = urllib.request.Request(
+                  url, data=body,
+                  headers={'Content-Type': 'application/json', 'X-Hub-Signature-256': f'sha256={sig}'},
+                  method='POST')
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as r:
+                      print(f"Webhook sent: {r.status}")
+              except Exception as e:
+                  print(f"Webhook forward failed: {e}")
+
+          def handler(event, context):
+              """Route alarm SNS messages to the correct Space webhook via SpaceId tag."""
+              for rec in event.get('Records', []):
+                  msg = json.loads(rec['Sns']['Message'])
+                  alarm_name = msg.get('AlarmName', 'unknown')
+                  alarm_arn = msg.get('AlarmArn', '')
+                  state = msg.get('NewStateValue', '')
+                  reason = msg.get('NewStateReason', '')[:200]
+                  print(f"Alarm: {alarm_name} state={state} reason={reason}")
+
+                  if state != 'ALARM':
+                      continue
+
+                  creds = get_webhook_for_alarm(alarm_arn)
+                  if creds:
+                      forward_to_webhook(creds, msg)
+                  else:
+                      print(f"No webhook target for alarm {alarm_name}")
+      Tags:
+        - Key: App
+          Value: 'Overview'
+        - Key: auto-delete
+          Value: 'never'
+
+  WebhookLambdaSnsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookForwarderFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !ImportValue
+        Fn::Sub: '${ProjectName}-alarm-topic-arn'
+
+  WebhookSnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !ImportValue
+        Fn::Sub: '${ProjectName}-alarm-topic-arn'
+      Protocol: lambda
+      Endpoint: !GetAtt WebhookForwarderFunction.Arn
+
+  # ── EventBridge: DevOps Agent Investigation Events ──
+  InvestigationEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-investigation-events'
+      Description: 'Capture DevOps Agent investigation lifecycle events'
+      EventPattern:
+        source:
+          - 'aws.aidevops'
+        detail-type:
+          - 'Investigation Created'
+          - 'Investigation In Progress'
+          - 'Investigation Completed'
+          - 'Investigation Failed'
+          - 'Investigation Timed Out'
+          - 'Investigation Cancelled'
+      Targets:
+        - Arn: !GetAtt InvestigationEventFunction.Arn
+          Id: investigation-event-handler
+      Tags:
+        - Key: App
+          Value: 'Overview'
+        - Key: auto-delete
+          Value: 'never'
+
+  InvestigationEventFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-investigation-event-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt InvestigationEventsTable.Arn
+              - Effect: Allow
+                Action:
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:SetAlarmState
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - aidevops:GetBacklogTask
+                Resource: '*'
+      Tags:
+        - Key: App
+          Value: 'Overview'
+
+  InvestigationEventFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-investigation-event'
+      Description: 'Stores DevOps Agent investigation events to DynamoDB'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      MemorySize: 128
+      Role: !GetAtt InvestigationEventFunctionRole.Arn
+      Layers:
+        - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:boto3-devops-agent:1'
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: '${ProjectName}-private-subnet-1-id'
+          - !ImportValue
+            Fn::Sub: '${ProjectName}-private-subnet-2-id'
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: '${ProjectName}-eks-sg-id'
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref InvestigationEventsTable
+          DASHBOARD_URL: ''
+          ALARM_PREFIX: !Sub '${ProjectName}-'
+          AGENT_SPACE_ID: !GetAtt DevOpsAgentSpace.AgentSpaceId
+      Code:
+        ZipFile: |
+          import json, os, boto3, urllib.request, re
+          from datetime import datetime
+
+          table = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])
+          cw = boto3.client('cloudwatch')
+          DASHBOARD_URL = os.environ.get('DASHBOARD_URL', '')
+          ALARM_PREFIX = os.environ.get('ALARM_PREFIX', 'devops-agent-test-')
+          AGENT_SPACE_ID = os.environ.get('AGENT_SPACE_ID', '')
+
+          def get_agent_client():
+              """Lazy init devops-agent client (requires boto3 >= 1.42.79 via Layer)."""
+              try:
+                  return boto3.client('devops-agent')
+              except Exception as e:
+                  print(f"devops-agent client failed (boto3={boto3.__version__}): {e}")
+                  return None
+
+          def reset_alarms():
+              """Re-enable alarm actions and reset state after investigation completes."""
+              try:
+                  paginator = cw.get_paginator('describe_alarms')
+                  for page in paginator.paginate(AlarmNamePrefix=ALARM_PREFIX):
+                      for alarm in page.get('MetricAlarms', []):
+                          name = alarm['AlarmName']
+                          # Re-enable actions
+                          if not alarm.get('ActionsEnabled', True):
+                              cw.enable_alarm_actions(AlarmNames=[name])
+                              print(f"Re-enabled actions: {name}")
+                          # Reset to OK
+                          if alarm['StateValue'] == 'ALARM':
+                              cw.set_alarm_state(
+                                  AlarmName=name,
+                                  StateValue='OK',
+                                  StateReason='Auto-reset after investigation completed'
+                              )
+                              print(f"Reset alarm: {name}")
+              except Exception as e:
+                  print(f"Alarm reset failed: {e}")
+
+          def handler(event, context):
+              detail = event.get('detail', {})
+              metadata = detail.get('metadata', {})
+              data = detail.get('data', {})
+              detail_type = event.get('detail-type', '')
+
+              item = {
+                  'task_id': metadata.get('task_id', 'unknown'),
+                  'event_type': detail_type,
+                  'agent_space_id': metadata.get('agent_space_id', ''),
+                  'execution_id': metadata.get('execution_id', ''),
+                  'status': data.get('status', ''),
+                  'priority': data.get('priority', ''),
+                  'task_type': data.get('task_type', ''),
+                  'summary_record_id': data.get('summary_record_id', ''),
+                  'created_at': data.get('created_at', ''),
+                  'updated_at': data.get('updated_at', ''),
+                  'received_at': datetime.utcnow().isoformat() + 'Z',
+                  'cleanup_requested': False,
+                  'raw_event': json.dumps(event),
+                  'reference_id': '',
+                  'alarm_name': '',
+              }
+
+              # Lookup referenceId from get_backlog_task to map incidentId → task
+              try:
+                  agent_client = get_agent_client()
+                  if agent_client:
+                      task_resp = agent_client.get_backlog_task(
+                          agentSpaceId=AGENT_SPACE_ID,
+                          taskId=item['task_id']
+                      )
+                      ref = task_resp.get('task', {}).get('reference', {})
+                      ref_id = ref.get('referenceId', '')
+                      item['reference_id'] = ref_id
+                      if ref_id:
+                          parts = re.split(r'-\d{4}-\d{2}-\d{2}T', ref_id)
+                          item['alarm_name'] = parts[0] if parts else ref_id
+                      print(f"Reference: {ref_id}, alarm: {item['alarm_name']}")
+                  else:
+                      print("devops-agent client not available, skipping referenceId lookup")
+              except Exception as e:
+                  print(f"get_backlog_task failed (non-critical): {e}")
+
+              # DynamoDB GSI keys cannot be empty strings
+              for k in ('reference_id', 'alarm_name'):
+                  if not item.get(k):
+                      del item[k]
+
+              table.put_item(Item=item)
+              print(f"{detail_type}: task={item['task_id']} status={item['status']}")
+
+              # On investigation completed: reset alarms + notify dashboard for cleanup
+              if data.get('status') == 'COMPLETED' or detail_type == 'Investigation Completed':
+                  print("Investigation completed - resetting alarms")
+                  reset_alarms()
+                  table.update_item(
+                      Key={'task_id': item['task_id'], 'event_type': item['event_type']},
+                      UpdateExpression='SET cleanup_requested = :val',
+                      ExpressionAttributeValues={':val': True}
+                  )
+                  # Notify dashboard to run scenario restore/cleanup
+                  if DASHBOARD_URL:
+                      try:
+                          req = urllib.request.Request(
+                              f"{DASHBOARD_URL}/api/auto-cleanup",
+                              data=json.dumps({'task_id': item['task_id']}).encode(),
+                              headers={'Content-Type': 'application/json'},
+                              method='POST'
+                          )
+                          with urllib.request.urlopen(req, timeout=10) as r:
+                              print(f"Auto-cleanup triggered: {r.status}")
+                      except Exception as e:
+                          print(f"Auto-cleanup failed (non-critical): {e}")
+                  print("Cleanup completed")
+
+              # Push notification to dashboard API
+              if DASHBOARD_URL:
+                  try:
+                      payload = json.dumps(item).encode()
+                      req = urllib.request.Request(
+                          f"{DASHBOARD_URL}/api/investigation-event",
+                          data=payload,
+                          headers={'Content-Type': 'application/json'},
+                          method='POST'
+                      )
+                      with urllib.request.urlopen(req, timeout=5) as r:
+                          print(f"Dashboard notified: {r.status}")
+                  except Exception as e:
+                      print(f"Dashboard notify failed (non-critical): {e}")
+
+              return {'statusCode': 200}
+      Tags:
+        - Key: App
+          Value: 'Overview'
+        - Key: auto-delete
+          Value: 'never'
+
+  InvestigationEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref InvestigationEventFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt InvestigationEventRule.Arn
+
+  InvestigationEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-investigation-events'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: task_id
+          AttributeType: S
+        - AttributeName: event_type
+          AttributeType: S
+        - AttributeName: reference_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: task_id
+          KeyType: HASH
+        - AttributeName: event_type
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: reference-id-index
+          KeySchema:
+            - AttributeName: reference_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: App
+          Value: 'Overview'
+        - Key: auto-delete
+          Value: 'never'
+
+  ScenarioRunsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-scenario-runs'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: run_id
+          AttributeType: S
+        - AttributeName: record_type
+          AttributeType: S
+        - AttributeName: scenario_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: run_id
+          KeyType: HASH
+        - AttributeName: record_type
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: scenario-id-index
+          KeySchema:
+            - AttributeName: scenario_id
+              KeyType: HASH
+            - AttributeName: run_id
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: App
+          Value: 'Overview'
+        - Key: auto-delete
+          Value: 'never'
+
+  # SecurityFindingsTable — managed by 08-security-agent.yml stack
+
+Outputs:
+  AgentSpaceId:
+    Description: DevOps Agent Space ID
+    Value: !GetAtt DevOpsAgentSpace.AgentSpaceId
+    Export:
+      Name: !Sub '${ProjectName}-agent-space-id'
+
+  AgentSpaceArn:
+    Description: DevOps Agent Space ARN
+    Value: !GetAtt DevOpsAgentSpace.Arn
+    Export:
+      Name: !Sub '${ProjectName}-agent-space-arn'
+
+  DevOpsAgentRoleArn:
+    Description: IAM Role ARN for DevOps Agent
+    Value: !GetAtt DevOpsAgentRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-devops-agent-role-arn'
+
+  MonitorAssociationId:
+    Description: Monitor Association ID
+    Value: !GetAtt MonitorAssociation.AssociationId
+    Export:
+      Name: !Sub '${ProjectName}-monitor-association-id'
+
+  WebhookServiceId:
+    Description: EventChannel Service ID for webhook
+    Value: !GetAtt WebhookSetup.ServiceId
+    Export:
+      Name: !Sub '${ProjectName}-webhook-service-id'
+
+  WebhookAssociationId:
+    Description: Webhook Association ID
+    Value: !GetAtt WebhookSetup.AssociationId
+    Export:
+      Name: !Sub '${ProjectName}-webhook-association-id'
+
+  WebhookForwarderFunctionArn:
+    Description: Lambda ARN for CW Alarm to DevOps Agent webhook bridge
+    Value: !GetAtt WebhookForwarderFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-webhook-forwarder-arn'
+
+  WebhookCredentialsSecretArn:
+    Description: Secrets Manager ARN with webhook URL and HMAC secret
+    Value: !Ref WebhookCredentialsSecret
+    Export:
+      Name: !Sub '${ProjectName}-webhook-secret-arn'
+
+  InvestigationEventsTableName:
+    Description: DynamoDB table for investigation events
+    Value: !Ref InvestigationEventsTable
+    Export:
+      Name: !Sub '${ProjectName}-investigation-events-table'
+
+  ScenarioRunsTableName:
+    Description: DynamoDB table for scenario run results
+    Value: !Ref ScenarioRunsTable
+    Export:
+      Name: !Sub '${ProjectName}-scenario-runs-table'
+
+  SecurityFindingsTableName:
+    Description: DynamoDB table for security findings history
+    Value: !Sub '${ProjectName}-security-findings'
+    Export:
+      Name: !Sub '${ProjectName}-security-findings-table'
+
+  SourceAccountAssociationId:
+    Condition: HasSecondaryAccount
+    Description: Source Account Association ID (secondary account monitoring)
+    Value: !GetAtt SourceAccountAssociation.AssociationId
+    Export:
+      Name: !Sub '${ProjectName}-source-account-association-id'
+
+  GitHubAssociationId:
+    Condition: HasGitHub
+    Description: GitHub Association ID
+    Value: !GetAtt GitHubAssociation.AssociationId
+    Export:
+      Name: !Sub '${ProjectName}-github-association-id'
+
+  SlackAssociationId:
+    Condition: HasSlack
+    Description: Slack Association ID
+    Value: !GetAtt SlackAssociation.AssociationId
+    Export:
+      Name: !Sub '${ProjectName}-slack-association-id'
+

@@ -1,0 +1,162 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Roles for AWS Security Agent (Pentest Service Role + Web App Role)'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name (passed by deploy.sh)
+
+Resources:
+  # ============================================================
+  # 1. Pentest Service Role - Agent가 VPC ENI 생성 등에 사용
+  # ============================================================
+  SecurityAgentServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-security-agent-role'
+      Path: '/service-role/'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSecurityAgentAssumeRole
+            Effect: Allow
+            Principal:
+              Service: securityagent.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn:
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:agent-instance/*'
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:agent-space/*'
+      Policies:
+        - PolicyName: SecurityAgentVPCNetworkAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:CreateNetworkInterfacePermission
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeVpcAttribute
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeNetworkAcls
+                Resource: '*'
+        - PolicyName: SecurityAgentDNSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - route53:GetHostedZone
+                  - route53:ListHostedZones
+                  - route53:ListResourceRecordSets
+                  - route53resolver:ListResolverEndpoints
+                  - route53resolver:ListResolverRules
+                Resource: '*'
+        - PolicyName: SecurityAgentLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/securityagent/*'
+        - PolicyName: SecurityAgentS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::aws-securityagent-*'
+                  - !Sub 'arn:aws:s3:::aws-securityagent-*/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-security-agent-role'
+        - Key: Environment
+          Value: !Ref ProjectName
+        - Key: auto-delete
+          Value: 'never'
+
+  # ============================================================
+  # 2. Web App Role - Operator 콘솔이 API 호출에 사용
+  #    GA 정책: AWSSecurityAgentWebAppPolicy
+  # ============================================================
+  SecurityAgentWebAppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-security-agent-webapp-role'
+      Path: '/service-role/'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowServiceAssumeRole
+            Effect: Allow
+            Principal:
+              Service: securityagent.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn:
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:application/*'
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:agent-instance/*'
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:agent-space/*'
+          - Sid: AllowServiceSetContext
+            Effect: Allow
+            Principal:
+              Service: securityagent.amazonaws.com
+            Action: sts:SetContext
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ForAllValues:ArnEquals:
+                sts:RequestContextProviders: 'arn:aws:iam::aws:contextProvider/IdentityCenter'
+              ArnLike:
+                aws:SourceArn:
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:application/*'
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:agent-instance/*'
+                  - !Sub 'arn:aws:securityagent:${AWS::Region}:${AWS::AccountId}:agent-space/*'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSSecurityAgentWebAppPolicy'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-security-agent-webapp-role'
+        - Key: Environment
+          Value: !Ref ProjectName
+        - Key: auto-delete
+          Value: 'never'
+
+Outputs:
+  SecurityAgentServiceRoleArn:
+    Description: Security Agent Service Role ARN (for pentest VPC access)
+    Value: !GetAtt SecurityAgentServiceRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-security-agent-role-arn'
+
+  SecurityAgentWebAppRoleArn:
+    Description: Security Agent Web App Role ARN (for operator console)
+    Value: !GetAtt SecurityAgentWebAppRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-security-agent-webapp-role-arn'

@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EBS CSI Driver for devops-agent-test-m2-cluster
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: devops-agent-test-m2
+  ClusterName:
+    Type: String
+    Default: devops-agent-test-m2-cluster
+  OIDCProviderId:
+    Type: String
+    Description: OIDC provider ID (last segment of the OIDC URL)
+    Default: 431460B5A275FD910A960CED0A5FE6B1
+
+Resources:
+  EbsCsiDriverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ebs-csi-driver-role'
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "arn:aws:iam::${AWS::AccountId}:oidc-provider/oidc.eks.${AWS::Region}.amazonaws.com/id/${OIDCProviderId}"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+              "StringEquals": {
+                "oidc.eks.${AWS::Region}.amazonaws.com/id/${OIDCProviderId}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa",
+                "oidc.eks.${AWS::Region}.amazonaws.com/id/${OIDCProviderId}:aud": "sts.amazonaws.com"
+              }
+            }
+          }]
+        }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ebs-csi-driver-role'
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  EbsCsiDriverAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: EbsCsiDriverRole
+    Properties:
+      ClusterName: !Ref ClusterName
+      AddonName: aws-ebs-csi-driver
+      ServiceAccountRoleArn: !GetAtt EbsCsiDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ebs-csi-driver'
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+Outputs:
+  EbsCsiDriverRoleArn:
+    Value: !GetAtt EbsCsiDriverRole.Arn

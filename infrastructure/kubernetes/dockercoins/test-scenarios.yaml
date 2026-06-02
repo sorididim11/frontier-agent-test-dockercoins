@@ -1,0 +1,515 @@
+# ============================================
+# Test Scenarios for DevOps Agent Testing
+# ============================================
+# These deployments are designed to trigger specific failure scenarios
+# that DevOps Agent should be able to diagnose.
+
+---
+# Scenario 2: ImagePullBackOff - Wrong image tag
+# Deploy with: kubectl apply -f test-scenarios.yaml
+# This will fail to pull the image and enter ImagePullBackOff state
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-imagepull-fail
+  namespace: dockercoins
+  labels:
+    app: test-imagepull-fail
+    scenario: imagepullbackoff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-imagepull-fail
+  template:
+    metadata:
+      labels:
+        app: test-imagepull-fail
+    spec:
+      containers:
+      - name: test-container
+        # Non-existent tag to trigger ImagePullBackOff
+        image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/hasher:nonexistent-v999
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Scenario 5: Resource Quota Exceeded
+# First apply the ResourceQuota, then try to deploy a pod that exceeds it
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: test-quota
+  namespace: dockercoins
+spec:
+  hard:
+    requests.cpu: "100m"
+    requests.memory: "64Mi"
+    limits.cpu: "200m"
+    limits.memory: "128Mi"
+    pods: "10"
+
+---
+# Scenario 5b: Pod that exceeds quota (deploy after quota is applied)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-quota-exceed
+  namespace: dockercoins
+  labels:
+    app: test-quota-exceed
+    scenario: quota-exceeded
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-quota-exceed
+  template:
+    metadata:
+      labels:
+        app: test-quota-exceed
+    spec:
+      containers:
+      - name: test-container
+        image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/hasher:latest
+        ports:
+        - containerPort: 80
+        resources:
+          # These exceed the quota limits
+          requests:
+            memory: "256Mi"
+            cpu: "500m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+
+---
+# Scenario 3: CrashLoopBackOff - App startup failure
+# Container exits immediately on startup
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-crashloop
+  namespace: dockercoins
+  labels:
+    app: test-crashloop
+    scenario: crashloopbackoff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-crashloop
+  template:
+    metadata:
+      labels:
+        app: test-crashloop
+    spec:
+      containers:
+      - name: test-container
+        image: busybox:latest
+        command: ["sh", "-c", "echo 'ERROR: Failed to connect to database at startup' && echo 'FATAL: Cannot initialize application without database connection' && exit 1"]
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+
+---
+# Scenario 6: Service Discovery Failure
+# Pod tries to connect to non-existent service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-service-discovery
+  namespace: dockercoins
+  labels:
+    app: test-service-discovery
+    scenario: service-discovery-failure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-service-discovery
+  template:
+    metadata:
+      labels:
+        app: test-service-discovery
+    spec:
+      containers:
+      - name: test-container
+        image: curlimages/curl:latest
+        command: ["sh", "-c", "while true; do echo 'Connecting to payment-gateway service...'; curl -s --max-time 5 http://payment-gateway.dockercoins:8080/health || echo 'ERROR: Payment gateway connection failed'; sleep 5; done"]
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+
+---
+# ============================================
+# K8s Platform Level Scenarios
+# ============================================
+
+# K07: NetworkPolicy Block - Deny all ingress traffic
+# This will block all incoming traffic to pods with label app=test-network-blocked
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-deny-all-ingress
+  namespace: dockercoins
+  labels:
+    scenario: networkpolicy-block
+spec:
+  podSelector:
+    matchLabels:
+      network-test: blocked
+  policyTypes:
+  - Ingress
+  ingress: []  # Empty = deny all ingress
+
+---
+# K07b: Pod that will be blocked by NetworkPolicy
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-network-blocked
+  namespace: dockercoins
+  labels:
+    app: test-network-blocked
+    scenario: networkpolicy-block
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-network-blocked
+  template:
+    metadata:
+      labels:
+        app: test-network-blocked
+        network-test: blocked
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# K07c: Service for the blocked pod
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-network-blocked
+  namespace: dockercoins
+  labels:
+    scenario: networkpolicy-block
+spec:
+  selector:
+    app: test-network-blocked
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# K06: PVC Binding Failure - Non-existent StorageClass
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-pvc-fail
+  namespace: dockercoins
+  labels:
+    scenario: pvc-binding-failure
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nonexistent-storage-class
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# K06b: Pod waiting for PVC
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-pvc-pending
+  namespace: dockercoins
+  labels:
+    app: test-pvc-pending
+    scenario: pvc-binding-failure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-pvc-pending
+  template:
+    metadata:
+      labels:
+        app: test-pvc-pending
+    spec:
+      containers:
+      - name: app
+        image: busybox:latest
+        command: ["sh", "-c", "while true; do echo 'Running...'; sleep 60; done"]
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: test-pvc-fail
+
+---
+# K08: HPA with invalid metric - will fail to scale
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: test-hpa-fail
+  namespace: dockercoins
+  labels:
+    scenario: hpa-failure
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: test-hpa-target
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Pods
+    pods:
+      metric:
+        name: nonexistent_custom_metric
+      target:
+        type: AverageValue
+        averageValue: "100"
+
+---
+# K08b: Deployment for HPA test
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-hpa-target
+  namespace: dockercoins
+  labels:
+    app: test-hpa-target
+    scenario: hpa-failure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-hpa-target
+  template:
+    metadata:
+      labels:
+        app: test-hpa-target
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+
+---
+# ConfigMap missing scenario - Pod references non-existent ConfigMap
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-configmap-missing
+  namespace: dockercoins
+  labels:
+    app: test-configmap-missing
+    scenario: configmap-missing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-configmap-missing
+  template:
+    metadata:
+      labels:
+        app: test-configmap-missing
+    spec:
+      containers:
+      - name: app
+        image: busybox:latest
+        command: ["sh", "-c", "echo $APP_CONFIG && sleep 3600"]
+        env:
+        - name: APP_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: nonexistent-configmap
+              key: config
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+
+---
+# Secret missing scenario - Pod references non-existent Secret
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-secret-missing
+  namespace: dockercoins
+  labels:
+    app: test-secret-missing
+    scenario: secret-missing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-secret-missing
+  template:
+    metadata:
+      labels:
+        app: test-secret-missing
+    spec:
+      containers:
+      - name: app
+        image: busybox:latest
+        command: ["sh", "-c", "echo $DB_PASSWORD && sleep 3600"]
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nonexistent-secret
+              key: password
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+
+---
+# Liveness probe failure - Pod will be killed repeatedly
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-liveness-fail
+  namespace: dockercoins
+  labels:
+    app: test-liveness-fail
+    scenario: liveness-failure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-liveness-fail
+  template:
+    metadata:
+      labels:
+        app: test-liveness-fail
+    spec:
+      containers:
+      - name: app
+        image: busybox:latest
+        command: ["sh", "-c", "sleep 3600"]
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+
+---
+# Readiness probe failure - Pod will not receive traffic
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-readiness-fail
+  namespace: dockercoins
+  labels:
+    app: test-readiness-fail
+    scenario: readiness-failure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-readiness-fail
+  template:
+    metadata:
+      labels:
+        app: test-readiness-fail
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /nonexistent-health-endpoint
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Readiness fail service
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-readiness-fail
+  namespace: dockercoins
+  labels:
+    scenario: readiness-failure
+spec:
+  selector:
+    app: test-readiness-fail
+  ports:
+  - port: 80
+    targetPort: 80

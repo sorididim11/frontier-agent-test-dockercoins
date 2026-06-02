@@ -1,0 +1,65 @@
+{
+  "project_name": "devops-agent-test",
+  "aws_profile": "member1-acc",
+  "aws_region": "us-east-1",
+  "github": {
+    "org": "<YOUR_GITHUB_ORG>",
+    "repo": "<YOUR_GITHUB_REPO>",
+    "integration_display_name": "devops-agent-dockercoins"
+  },
+  "targets": [
+    {
+      "name": "webui",
+      "domain": "webui.<YOUR_DOMAIN>",
+      "endpoint": "http://webui.<YOUR_DOMAIN>",
+      "verification_method": "DNS_TXT",
+      "route53_zone_id": "<YOUR_ROUTE53_ZONE_ID>",
+      "private_dns": true,
+      "nlb_dns": "<YOUR_NLB_DNS>",
+      "nlb_hosted_zone_id": "<YOUR_NLB_HOSTED_ZONE_ID>",
+      "k8s_service": "dockercoins/webui"
+    },
+    {
+      "name": "dashboard-overview",
+      "domain": "dashboard.<YOUR_DOMAIN>",
+      "endpoint": "http://dashboard.<YOUR_DOMAIN>:5003",
+      "verification_method": "DNS_TXT",
+      "route53_zone_id": "<YOUR_ROUTE53_ZONE_ID>",
+      "private_dns": true,
+      "nlb_dns": "<YOUR_NLB_DNS>",
+      "nlb_hosted_zone_id": "<YOUR_NLB_HOSTED_ZONE_ID>",
+      "k8s_service": "dashboard/dashboard"
+    }
+  ],
+  "vpc": {
+    "vpc_arn": "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:vpc/<VPC_ID>",
+    "subnet_arns": [
+      "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:subnet/<SUBNET_ID_1>",
+      "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:subnet/<SUBNET_ID_2>"
+    ],
+    "security_group_arns": [
+      "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:security-group/<SG_ID>"
+    ]
+  },
+  "iam": {
+    "service_role_arn": "arn:aws:iam::<ACCOUNT_ID>:role/service-role/<ROLE_NAME>"
+  },
+  "agent_space": {
+    "name": "devops-agent-test-security",
+    "description": "Security Agent for DevOps Agent Test app (DockerCoins)",
+    "code_review": {
+      "controls_scanning": true,
+      "general_purpose_scanning": true
+    }
+  },
+  "pentest": {
+    "title": "DevOps-Agent-Test-Pentest",
+    "code_remediation_strategy": "AUTOMATIC",
+    "exclude_risk_types": ["DENIAL_OF_SERVICE"],
+    "log_group": "/aws/securityagent/devops-agent-test"
+  },
+  "options": {
+    "run_first_pentest": false,
+    "skip_if_exists": true
+  }
+}

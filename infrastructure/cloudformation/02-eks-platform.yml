@@ -1,0 +1,1031 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Test - EKS Cluster and Load Balancer (v3-rebuild)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name for resource tagging
+
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  KubernetesVersion:
+    Type: String
+    Default: '1.33'
+    AllowedValues: ['1.28', '1.29', '1.30', '1.31', '1.32', '1.33']
+    Description: 'Kubernetes version for EKS cluster and node group'
+
+  SecondaryAccountId:
+    Type: String
+    Default: ''
+    Description: 'Secondary account ID that can pull from ECR repos (leave empty to skip)'
+
+Conditions:
+  HasSecondaryAccount: !Not [!Equals [!Ref SecondaryAccountId, '']]
+
+Resources:
+  # EKS Cluster Service Role
+  EKSClusterServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-eks-cluster-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eks-cluster-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # EKS Node Group Role
+  EKSNodeGroupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-eks-nodegroup-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: EKSNodeGroupAdditionalPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeTags
+                  - logs:PutLogEvents
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:DescribeLogGroups
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eks-nodegroup-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # OIDC Provider for EKS (Required for IRSA)
+  EKSOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+      ClientIdList:
+        - sts.amazonaws.com
+      # ThumbprintList is optional - IAM will auto-retrieve from OIDC endpoint
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eks-oidc-provider'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+
+  # Lambda function to create IRSA IAM Role with dynamic OIDC conditions
+  IRSARoleCreatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-irsa-role-creator'
+      Runtime: python3.11
+      Handler: index.handler
+      Timeout: 120
+      Role: !GetAtt IRSARoleCreatorRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+          
+          iam = boto3.client('iam')
+          
+          def handler(event, context):
+              try:
+                  request_type = event['RequestType']
+                  props = event['ResourceProperties']
+                  role_name = props['RoleName']
+                  
+                  if request_type == 'Delete':
+                      physical_id = event.get('PhysicalResourceId', '')
+                      if physical_id != role_name:
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
+                          return
+                      try:
+                          attached = iam.list_attached_role_policies(RoleName=role_name)
+                          for policy in attached.get('AttachedPolicies', []):
+                              iam.detach_role_policy(RoleName=role_name, PolicyArn=policy['PolicyArn'])
+                          inline = iam.list_role_policies(RoleName=role_name)
+                          for policy_name in inline.get('PolicyNames', []):
+                              iam.delete_role_policy(RoleName=role_name, PolicyName=policy_name)
+                          iam.delete_role(RoleName=role_name)
+                      except iam.exceptions.NoSuchEntityException:
+                          pass
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, role_name)
+                      return
+                  
+                  oidc_provider_arn = props['OIDCProviderArn']
+                  oidc_issuer_url = props['OIDCIssuerUrl']
+                  namespace = props['Namespace']
+                  sa_name = props['ServiceAccountName']
+                  managed_policies = props.get('ManagedPolicyArns', [])
+                  inline_policy = props.get('InlinePolicyDocument')
+                  tags = props.get('Tags', [])
+                  
+                  # Extract OIDC host from URL
+                  oidc_host = oidc_issuer_url.replace('https://', '')
+                  
+                  # Create trust policy with dynamic OIDC conditions
+                  trust_policy = {
+                      'Version': '2012-10-17',
+                      'Statement': [{
+                          'Effect': 'Allow',
+                          'Principal': {'Federated': oidc_provider_arn},
+                          'Action': 'sts:AssumeRoleWithWebIdentity',
+                          'Condition': {
+                              'StringEquals': {
+                                  f'{oidc_host}:sub': f'system:serviceaccount:{namespace}:{sa_name}',
+                                  f'{oidc_host}:aud': 'sts.amazonaws.com'
+                              }
+                          }
+                      }]
+                  }
+                  
+                  if request_type == 'Create':
+                      iam.create_role(
+                          RoleName=role_name,
+                          AssumeRolePolicyDocument=json.dumps(trust_policy),
+                          Tags=tags
+                      )
+                  elif request_type == 'Update':
+                      try:
+                          iam.update_assume_role_policy(
+                              RoleName=role_name,
+                              PolicyDocument=json.dumps(trust_policy)
+                          )
+                      except iam.exceptions.NoSuchEntityException:
+                          iam.create_role(
+                              RoleName=role_name,
+                              AssumeRolePolicyDocument=json.dumps(trust_policy),
+                              Tags=tags
+                          )
+                  
+                  # Attach managed policies
+                  for policy_arn in managed_policies:
+                      try:
+                          iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+                      except iam.exceptions.EntityAlreadyExistsException:
+                          pass
+                  
+                  # Add inline policy
+                  if inline_policy:
+                      iam.put_role_policy(
+                          RoleName=role_name,
+                          PolicyName='InlinePolicy',
+                          PolicyDocument=json.dumps(inline_policy)
+                      )
+                  
+                  # Get role ARN
+                  role = iam.get_role(RoleName=role_name)
+                  role_arn = role['Role']['Arn']
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'RoleArn': role_arn,
+                      'RoleName': role_name
+                  }, role_name)
+
+              except Exception as e:
+                  print(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)}, event.get('PhysicalResourceId', context.log_stream_name))
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-irsa-role-creator'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # IAM Role for IRSA Role Creator Lambda
+  IRSARoleCreatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-irsa-role-creator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IRSARoleCreatorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:TagRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-irsa-role-creator-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # SSM Parameter to store OIDC Provider Host (for reference by other stacks/scripts)
+  EKSOIDCProviderHostParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ProjectName}/eks/oidc-provider-host'
+      Type: String
+      Value: !Select [1, !Split ['https://', !GetAtt EKSCluster.OpenIdConnectIssuerUrl]]
+      Description: EKS OIDC Provider Host for IRSA configuration
+      Tags:
+        Environment: !Ref Environment
+        auto-delete: 'never'
+        App: 'Foundation'
+
+  # EKS Cluster
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Sub '${ProjectName}-cluster'
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt EKSClusterServiceRole.Arn
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !Ref EKSClusterSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub '${ProjectName}-private-subnet-1-id'
+          - Fn::ImportValue: !Sub '${ProjectName}-private-subnet-2-id'
+          - Fn::ImportValue: !Sub '${ProjectName}-public-subnet-1-id'
+          - Fn::ImportValue: !Sub '${ProjectName}-public-subnet-2-id'
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-cluster'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'compute-platform'
+        - Key: Tier
+          Value: 'application'
+        - Key: App
+          Value: 'Foundation'
+
+  # EKS Cluster Security Group
+  EKSClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-eks-cluster-sg'
+      GroupDescription: Security group for EKS cluster
+      VpcId: 
+        Fn::ImportValue: !Sub '${ProjectName}-vpc-id'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS access to EKS API server
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eks-cluster-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # EKS Node Group
+  EKSNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: !Sub '${ProjectName}-nodegroup-v6'
+      Version: !Ref KubernetesVersion
+      NodeRole: !GetAtt EKSNodeGroupRole.Arn
+      Subnets:
+        - Fn::ImportValue: !Sub '${ProjectName}-private-subnet-1-id'
+        - Fn::ImportValue: !Sub '${ProjectName}-private-subnet-2-id'
+      InstanceTypes:
+        - t3.medium
+      AmiType: AL2023_x86_64_STANDARD
+      CapacityType: ON_DEMAND
+      ScalingConfig:
+        MinSize: 3
+        MaxSize: 6
+        DesiredSize: 3
+      UpdateConfig:
+        MaxUnavailablePercentage: 25
+      Tags:
+        Environment: !Ref Environment
+        auto-delete: 'never'
+        Component: 'compute-nodes'
+        App: 'Foundation'
+
+
+  # ECR Repository for DockerCoins - Hasher
+  HasherECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}/hasher'
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryPolicyText: !If
+        - HasSecondaryAccount
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: AllowCrossAccountPull
+              Effect: Allow
+              Principal:
+                AWS: !Sub 'arn:aws:iam::${SecondaryAccountId}:root'
+              Action:
+                - ecr:GetDownloadUrlForLayer
+                - ecr:BatchGetImage
+                - ecr:BatchCheckLayerAvailability
+        - !Ref 'AWS::NoValue'
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-hasher-ecr'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Service
+          Value: 'hasher'
+        - Key: App
+          Value: 'DockerCoins'
+
+  # ECR Repository for DockerCoins - RNG
+  RngECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}/rng'
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryPolicyText: !If
+        - HasSecondaryAccount
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: AllowCrossAccountPull
+              Effect: Allow
+              Principal:
+                AWS: !Sub 'arn:aws:iam::${SecondaryAccountId}:root'
+              Action:
+                - ecr:GetDownloadUrlForLayer
+                - ecr:BatchGetImage
+                - ecr:BatchCheckLayerAvailability
+        - !Ref 'AWS::NoValue'
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-rng-ecr'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Service
+          Value: 'rng'
+        - Key: App
+          Value: 'DockerCoins'
+
+  # ECR Repository for DockerCoins - Worker
+  WorkerECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}/worker'
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryPolicyText: !If
+        - HasSecondaryAccount
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: AllowCrossAccountPull
+              Effect: Allow
+              Principal:
+                AWS: !Sub 'arn:aws:iam::${SecondaryAccountId}:root'
+              Action:
+                - ecr:GetDownloadUrlForLayer
+                - ecr:BatchGetImage
+                - ecr:BatchCheckLayerAvailability
+        - !Ref 'AWS::NoValue'
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-worker-ecr'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Service
+          Value: 'worker'
+        - Key: App
+          Value: 'DockerCoins'
+
+  # ECR Repository for DockerCoins - WebUI
+  WebuiECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}/webui'
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryPolicyText: !If
+        - HasSecondaryAccount
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: AllowCrossAccountPull
+              Effect: Allow
+              Principal:
+                AWS: !Sub 'arn:aws:iam::${SecondaryAccountId}:root'
+              Action:
+                - ecr:GetDownloadUrlForLayer
+                - ecr:BatchGetImage
+                - ecr:BatchCheckLayerAvailability
+        - !Ref 'AWS::NoValue'
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-webui-ecr'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Service
+          Value: 'webui'
+        - Key: App
+          Value: 'DockerCoins'
+
+  # ECR Repository for Dashboard
+  DashboardECRRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    Properties:
+      RepositoryName: !Sub '${ProjectName}/dashboard'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryPolicyText: !If
+        - HasSecondaryAccount
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: AllowCrossAccountPull
+              Effect: Allow
+              Principal:
+                AWS: !Sub 'arn:aws:iam::${SecondaryAccountId}:root'
+              Action:
+                - ecr:GetDownloadUrlForLayer
+                - ecr:BatchGetImage
+                - ecr:BatchCheckLayerAvailability
+        - !Ref 'AWS::NoValue'
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{"rulePriority": 1, "selection": {"tagStatus": "untagged", "countType": "sinceImagePushed", "countUnit": "days", "countNumber": 14}, "action": {"type": "expire"}}]
+          }
+      Tags:
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Environment
+          Value: !Ref ProjectName
+        - Key: App
+          Value: 'Foundation'
+
+  # Dashboard Service IAM Role (IRSA)
+  DashboardServiceIAMRoleCustomResource:
+    Type: Custom::IRSARole
+    Properties:
+      ServiceToken: !GetAtt IRSARoleCreatorFunction.Arn
+      RoleName: !Sub '${ProjectName}-dashboard-role'
+      ForceUpdate: '2026-04-29T1'
+      OIDCProviderArn: !Ref EKSOIDCProvider
+      OIDCIssuerUrl: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+      Namespace: dashboard
+      ServiceAccountName: dashboard
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess
+      InlinePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - eks:DescribeCluster
+              - eks:ListClusters
+              - eks:DescribeNodegroup
+              - eks:ListNodegroups
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+              - logs:GetLogEvents
+            Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/eks/${ProjectName}*'
+          - Sid: AgentSpaceApi
+            Effect: Allow
+            Action:
+              - aidevops:ListAgentSpaces
+              - aidevops:GetAgentSpace
+              - aidevops:ListAssociations
+              - aidevops:GetAssociation
+              - aidevops:ListExecutions
+              - aidevops:ListJournalRecords
+              - aidevops:ListBacklogTasks
+              - aidevops:GetBacklogTask
+              - aidevops:ListChats
+              - aidevops:ListGoals
+              - aidevops:ListRecommendations
+              - aidevops:GetRecommendation
+              - aidevops:DiscoverTopology
+              - aidevops:ListKnowledgeItems
+              - aidevops:GetKnowledgeItem
+              - aidevops:ListTagsForResource
+            Resource: '*'
+          - Sid: AgentSpaceWrite
+            Effect: Allow
+            Action:
+              - aidevops:CreateChat
+              - aidevops:SendMessage
+              - aidevops:CreateAgentSpace
+              - aidevops:TagResource
+              - aidevops:AssociateService
+              - aidevops:DisassociateService
+            Resource: '*'
+          - Sid: PermissionCheck
+            Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:ListAttachedRolePolicies
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:SimulatePrincipalPolicy
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*'
+          - Sid: TaggedResourceDiscovery
+            Effect: Allow
+            Action:
+              - tag:GetResources
+            Resource: '*'
+          - Sid: BoundaryProbes
+            Effect: Allow
+            Action:
+              - lambda:ListFunctions
+              - dynamodb:ListTables
+              - secretsmanager:ListSecrets
+              - rds:DescribeDBInstances
+              - sts:GetCallerIdentity
+            Resource: '*'
+          - Sid: ScenarioRunsTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProjectName}-scenario-runs*'
+          - Sid: InvestigationEventsTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:PutItem
+            Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProjectName}-investigation-events*'
+          - Sid: BedrockRuntime
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource: '*'
+          - Sid: SecretsManagerRead
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}-*'
+          - Sid: CloudWatchAlarmWrite
+            Effect: Allow
+            Action:
+              - cloudwatch:SetAlarmState
+            Resource: !Sub 'arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-*'
+          - Sid: FaultInjection
+            Effect: Allow
+            Action:
+              - fis:StartExperiment
+              - fis:GetExperiment
+              - fis:GetExperimentTemplate
+              - fis:ListExperimentTemplates
+            Resource: '*'
+          - Sid: XRayRead
+            Effect: Allow
+            Action:
+              - xray:GetTraceSummaries
+              - xray:BatchGetTraces
+            Resource: '*'
+          - Sid: CrossAccountAssume
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: 'arn:aws:iam::*:role/${ProjectName}-*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-dashboard-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # Investigation Cleanup CronJob IAM Role (IRSA)
+  CleanupServiceIAMRoleCustomResource:
+    Type: Custom::IRSARole
+    Properties:
+      ServiceToken: !GetAtt IRSARoleCreatorFunction.Arn
+      RoleName: !Sub '${ProjectName}-cleanup-role'
+      ForceUpdate: '2026-05-04T1'
+      OIDCProviderArn: !Ref EKSOIDCProvider
+      OIDCIssuerUrl: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+      Namespace: dockercoins
+      ServiceAccountName: investigation-cleanup
+      InlinePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: InvestigationEventsCleanup
+            Effect: Allow
+            Action:
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProjectName}-investigation-events*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-cleanup-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # CloudWatch Observability Addon IAM Role (for IRSA)
+  CloudWatchObservabilityRole:
+    Type: AWS::IAM::Role
+    DependsOn: EKSOIDCProvider
+    Properties:
+      RoleName: !Sub '${ProjectName}-cloudwatch-observability-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt EKSOIDCProvider.Arn
+            Action: sts:AssumeRoleWithWebIdentity
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: CloudWatchObservabilityAdditional
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-cloudwatch-observability-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # CloudWatch Observability Addon with Application Signals enabled
+  CloudWatchObservabilityAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: 
+      - EKSNodeGroup
+      - CloudWatchObservabilityRole
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: amazon-cloudwatch-observability
+      AddonVersion: v6.0.1-eksbuild.1
+      ServiceAccountRoleArn: !GetAtt CloudWatchObservabilityRole.Arn
+      ResolveConflicts: OVERWRITE
+      ConfigurationValues: |
+        {
+          "applicationSignals": {
+            "enabled": true
+          },
+          "containerInsights": {
+            "enabled": true
+          },
+          "containerLogs": {
+            "enabled": true
+          }
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-cloudwatch-observability'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # EBS CSI Driver IAM Role (for IRSA)
+  EbsCsiDriverRole:
+    Type: AWS::IAM::Role
+    DependsOn: EKSOIDCProvider
+    Properties:
+      RoleName: !Sub '${ProjectName}-ebs-csi-driver-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt EKSOIDCProvider.Arn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub '${EKSOIDCProvider.Url}:sub': 'system:serviceaccount:kube-system:ebs-csi-controller-sa'
+                !Sub '${EKSOIDCProvider.Url}:aud': 'sts.amazonaws.com'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ebs-csi-driver-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # EBS CSI Driver Addon
+  EbsCsiDriverAddon:
+    Type: AWS::EKS::Addon
+    DependsOn:
+      - EKSNodeGroup
+      - EbsCsiDriverRole
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: aws-ebs-csi-driver
+      ServiceAccountRoleArn: !GetAtt EbsCsiDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ebs-csi-driver'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+  # CloudWatch Log Groups for EKS
+  EKSClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/eks/${ProjectName}-cluster/cluster'
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eks-cluster-logs'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+        - Key: App
+          Value: 'Foundation'
+
+Outputs:
+  EKSClusterName:
+    Description: EKS Cluster Name
+    Value: !Ref EKSCluster
+    Export:
+      Name: !Sub '${ProjectName}-eks-cluster-name'
+  
+  EKSClusterArn:
+    Description: EKS Cluster ARN
+    Value: !GetAtt EKSCluster.Arn
+    Export:
+      Name: !Sub '${ProjectName}-eks-cluster-arn'
+  
+  EKSClusterEndpoint:
+    Description: EKS Cluster Endpoint
+    Value: !GetAtt EKSCluster.Endpoint
+    Export:
+      Name: !Sub '${ProjectName}-eks-cluster-endpoint'
+  
+  EKSClusterSecurityGroupId:
+    Description: EKS Cluster Security Group ID
+    Value: !Ref EKSClusterSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-eks-cluster-sg-id'
+  
+  EKSNodeGroupName:
+    Description: EKS Node Group Name
+    Value: !Ref EKSNodeGroup
+    Export:
+      Name: !Sub '${ProjectName}-eks-nodegroup-name'
+  
+  EKSOIDCProviderArn:
+    Description: EKS OIDC Provider ARN for IRSA
+    Value: !GetAtt EKSOIDCProvider.Arn
+    Export:
+      Name: !Sub '${ProjectName}-eks-oidc-provider-arn'
+  
+  EKSOIDCProviderUrl:
+    Description: EKS OIDC Provider URL
+    Value: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+    Export:
+      Name: !Sub '${ProjectName}-eks-oidc-provider-url'
+  
+  EKSNodeGroupRoleArn:
+    Description: EKS Node Group Role ARN (for pod permissions)
+    Value: !GetAtt EKSNodeGroupRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-eks-nodegroup-role-arn'
+  
+  HasherECRRepositoryURI:
+    Description: Hasher ECR Repository URI
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${HasherECRRepository}'
+    Export:
+      Name: !Sub '${ProjectName}-hasher-ecr-uri'
+  
+  RngECRRepositoryURI:
+    Description: RNG ECR Repository URI
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RngECRRepository}'
+    Export:
+      Name: !Sub '${ProjectName}-rng-ecr-uri'
+  
+  WorkerECRRepositoryURI:
+    Description: Worker ECR Repository URI
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${WorkerECRRepository}'
+    Export:
+      Name: !Sub '${ProjectName}-worker-ecr-uri'
+  
+  WebuiECRRepositoryURI:
+    Description: WebUI ECR Repository URI
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${WebuiECRRepository}'
+    Export:
+      Name: !Sub '${ProjectName}-webui-ecr-uri'
+  
+
+  DashboardECRRepositoryURI:
+    Value: !GetAtt DashboardECRRepository.RepositoryUri
+    Export:
+      Name: !Sub '${ProjectName}-dashboard-ecr-uri'
+
+  DashboardServiceIAMRoleArn:
+    Description: IAM Role ARN for Dashboard Service (IRSA)
+    Value: !GetAtt DashboardServiceIAMRoleCustomResource.RoleArn
+    Export:
+      Name: !Sub '${ProjectName}-dashboard-role-arn'
+
+  CleanupServiceIAMRoleArn:
+    Description: IAM Role ARN for Investigation Cleanup CronJob (IRSA)
+    Value: !GetAtt CleanupServiceIAMRoleCustomResource.RoleArn
+    Export:
+      Name: !Sub '${ProjectName}-cleanup-role-arn'

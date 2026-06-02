@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Test - Observability Infrastructure (SNS Topic + X-Ray Sampling)'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name (passed by deploy.sh)
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email address for alarm notifications (optional)
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+
+Resources:
+  # SNS Topic for Alarm Notifications
+  # Used by 04-devops-agent.yml alarm-to-webhook Lambda
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-alarms'
+      DisplayName: !Sub '${ProjectName} CloudWatch Alarms'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-alarm-topic'
+        - Key: App
+          Value: 'Overview'
+        - Key: auto-delete
+          Value: 'never'
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmNotificationTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # X-Ray Sampling Rule (100% for test environment)
+  XRaySamplingRule:
+    Type: AWS::XRay::SamplingRule
+    Properties:
+      SamplingRule:
+        RuleName: !Sub '${ProjectName}-sampling'
+        Priority: 1
+        FixedRate: 1.0
+        ReservoirSize: 100
+        ServiceName: '*'
+        ServiceType: '*'
+        Host: '*'
+        ResourceARN: '*'
+        HTTPMethod: '*'
+        URLPath: '*'
+        Version: 1
+      Tags:
+        - Key: App
+          Value: 'DockerCoins'
+
+Outputs:
+  AlarmNotificationTopicArn:
+    Description: SNS Topic ARN for alarm notifications
+    Value: !Ref AlarmNotificationTopic
+    Export:
+      Name: !Sub '${ProjectName}-alarm-topic-arn'

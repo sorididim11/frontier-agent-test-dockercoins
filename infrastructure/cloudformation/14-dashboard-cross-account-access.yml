@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cross-Account Dashboard Access — IAM Role + EKS AccessEntry for simulator multi-cluster kubectl'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test-m2'
+    Description: This account project name (for EKS cluster naming)
+  Environment:
+    Type: String
+    Default: 'devops-agent-test-m2'
+  PrimaryAccountId:
+    Type: String
+    Description: 'Account ID where the primary dashboard runs (e.g. 111111111111)'
+    AllowedPattern: '[0-9]{12}'
+  PrimaryDashboardRoleArn:
+    Type: String
+    Description: 'ARN of the primary dashboard IRSA role (e.g. arn:aws:iam::111111111111:role/devops-agent-test-dashboard-role)'
+
+Resources:
+  DashboardCrossAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-dashboard-xaccount-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref PrimaryDashboardRoleArn
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EKSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:ListClusters
+                Resource: '*'
+              - Sid: EKSAccessEntry
+                Effect: Allow
+                Action:
+                  - eks:CreateAccessEntry
+                  - eks:AssociateAccessPolicy
+                Resource: !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ProjectName}-cluster'
+        - PolicyName: ScenarioExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: FaultInjection
+                Effect: Allow
+                Action:
+                  - fis:StartExperiment
+                  - fis:GetExperiment
+                  - fis:GetExperimentTemplate
+                Resource: '*'
+              - Sid: CloudWatchAlarms
+                Effect: Allow
+                Action:
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:SetAlarmState
+                Resource: !Sub 'arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-dashboard-xaccount-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Overview
+        - Key: auto-delete
+          Value: 'never'
+
+  DashboardAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      PrincipalArn: !GetAtt DashboardCrossAccountRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: namespace
+            Namespaces:
+              - dockercoins
+      Tags:
+        - Key: App
+          Value: Overview
+        - Key: auto-delete
+          Value: 'never'
+
+Outputs:
+  DashboardCrossAccountRoleArn:
+    Description: Cross-account dashboard role ARN (for kubeconfig --role-arn)
+    Value: !GetAtt DashboardCrossAccountRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-dashboard-xaccount-role-arn'

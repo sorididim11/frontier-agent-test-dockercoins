@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: dockercoins
+  labels:
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+      annotations:
+        # Application Signals auto-instrumentation for Python
+        instrumentation.opentelemetry.io/inject-python: "true"
+    spec:
+      containers:
+      - name: worker
+        image: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/worker:latest
+        env:
+        - name: REDIS_HOST
+          value: "redis"
+        - name: RNG_HOST
+          value: "rng"
+        - name: HASHER_HOST
+          value: "hasher"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"

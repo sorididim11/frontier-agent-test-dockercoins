@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Agent Space AWS Association — reusable template per Space (scoped by App tag)'
+
+Parameters:
+  AgentSpaceId:
+    Type: String
+    Description: 'Agent Space ID (from API creation)'
+  SpaceName:
+    Type: String
+    Description: 'Space name (used for IAM role naming)'
+  AppTagValue:
+    Type: String
+    Description: 'App tag value for scope (e.g. DockerCoins, Overview)'
+  ExistingRoleArn:
+    Type: String
+    Default: ''
+    Description: 'Existing IAM Role ARN. If empty, creates new role.'
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+
+Conditions:
+  CreateRole: !Equals [!Ref ExistingRoleArn, '']
+
+Resources:
+  AgentRole:
+    Type: AWS::IAM::Role
+    Condition: CreateRole
+    Properties:
+      RoleName: !Sub '${SpaceName}-agent-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: aidevops.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:aidevops:*:${AWS::AccountId}:agentspace/${AgentSpaceId}'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy
+      Tags:
+        - Key: App
+          Value: !Ref AppTagValue
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+
+  MonitorAssociation:
+    Type: AWS::DevOpsAgent::Association
+    Properties:
+      AgentSpaceId: !Ref AgentSpaceId
+      ServiceId: 'aws'
+      Configuration:
+        Aws:
+          AccountId: !Ref AWS::AccountId
+          AccountType: 'monitor'
+          AssumableRoleArn: !If [CreateRole, !GetAtt AgentRole.Arn, !Ref ExistingRoleArn]
+          Tags:
+            - Key: App
+              Value: !Ref AppTagValue
+
+Outputs:
+  AgentRoleArn:
+    Description: 'IAM Role ARN for this Agent Space'
+    Value: !If [CreateRole, !GetAtt AgentRole.Arn, !Ref ExistingRoleArn]
+  AssociationId:
+    Description: 'AWS Association ID'
+    Value: !Ref MonitorAssociation

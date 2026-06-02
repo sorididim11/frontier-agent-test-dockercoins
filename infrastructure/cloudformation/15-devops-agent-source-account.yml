@@ -1,0 +1,49 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent — Source Account Association (cross-account monitoring)'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+  AgentSpaceId:
+    Type: String
+    Description: 'Primary Agent Space ID'
+  SecondaryAccountId:
+    Type: String
+    Description: 'Secondary account ID to monitor'
+    AllowedPattern: '[0-9]{12}'
+  SecondaryAccountRoleArn:
+    Type: String
+    Description: 'Cross-account DevOps Agent role ARN in secondary account'
+  SecondaryProjectName:
+    Type: String
+    Description: 'Project name in secondary account'
+
+Resources:
+  SourceAccountAssociation:
+    Type: AWS::DevOpsAgent::Association
+    Properties:
+      AgentSpaceId: !Ref AgentSpaceId
+      ServiceId: 'aws'
+      Configuration:
+        SourceAws:
+          AccountId: !Ref SecondaryAccountId
+          AccountType: 'source'
+          AssumableRoleArn: !Ref SecondaryAccountRoleArn
+          Tags:
+            - Key: App
+              Value: DevOpsAgent
+          Resources:
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:us-east-1:${SecondaryAccountId}:stack/${SecondaryProjectName}-vpc-foundation/*'
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:us-east-1:${SecondaryAccountId}:stack/${SecondaryProjectName}-eks-platform/*'
+            - ResourceType: 'AWS::CloudFormation::Stack'
+              ResourceArn: !Sub 'arn:aws:cloudformation:us-east-1:${SecondaryAccountId}:stack/${SecondaryProjectName}-rds-database/*'
+
+Outputs:
+  SourceAccountAssociationId:
+    Description: Source Account Association ID
+    Value: !GetAtt SourceAccountAssociation.AssociationId
+    Export:
+      Name: !Sub '${ProjectName}-source-account-association-id'

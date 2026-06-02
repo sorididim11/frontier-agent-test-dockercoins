@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/dockercoins
+
+images:
+  - name: hasher
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/hasher
+    newTag: "latest"
+  - name: rng
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/rng
+    newTag: "latest"
+  - name: worker
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/worker
+    newTag: "latest"
+  - name: webui
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/webui
+    newTag: "latest"
+
+patches:
+  - target:
+      kind: Deployment
+      name: rng
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "rds-placeholder.us-east-1.rds.amazonaws.com"
+  - target:
+      kind: CronJob
+      name: investigation-cleanup
+    patch: |
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/1/value
+        value: "devops-agent-test-m2-investigation-events"
+  - target:
+      kind: ServiceAccount
+      name: fis-experiment-sa
+    patch: |
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::222222222222:role/devops-agent-test-m2-fis-pod-role"

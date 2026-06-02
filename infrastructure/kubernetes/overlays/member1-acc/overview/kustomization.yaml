@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/overview
+
+images:
+  - name: overview
+    newName: 111111111111.dkr.ecr.us-east-1.amazonaws.com/devops-agent-test/overview
+    newTag: "v2"
+
+patches:
+  - target:
+      kind: ServiceAccount
+      name: overview
+    patch: |
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::111111111111:role/devops-agent-test-dashboard-role"
+  - target:
+      kind: ConfigMap
+      name: overview-config
+    patch: |
+      - op: replace
+        path: /data/EKS_CLUSTER_NAME
+        value: "devops-agent-test-cluster"
+      - op: replace
+        path: /data/EVENTS_TABLE
+        value: "devops-agent-test-investigation-events"
+      - op: replace
+        path: /data/RUNS_TABLE
+        value: "devops-agent-test-scenario-runs"
+      - op: replace
+        path: /data/SLACK_SECRET_NAME
+        value: "devops-agent-test-slack-bot-token"
+      - op: replace
+        path: /data/WEBHOOK_SECRET_NAME
+        value: "devops-agent-test-devops-agent-webhook"
+      - op: replace
+        path: /data/WEBHOOK_FUNCTION_NAME
+        value: "devops-agent-test-alarm-to-webhook"
+      - op: replace
+        path: /data/ALARM_PREFIX
+        value: "devops-agent-test"
+      - op: replace
+        path: /data/PROJECT_NAME
+        value: "devops-agent-test"

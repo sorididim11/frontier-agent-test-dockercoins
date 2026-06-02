@@ -1,0 +1,61 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'PrivateLink Consumer — Creates a VPC Interface Endpoint to reach a remote service'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+  ServiceName:
+    Type: String
+    Description: 'Remote service name (e.g. hasher, rng)'
+  EndpointServiceName:
+    Type: String
+    Description: 'Fully qualified endpoint service name (com.amazonaws.vpce.<region>.<vpce-svc-id>)'
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: 'Private subnet IDs for VPC Endpoint ENIs (must share AZ with provider NLB)'
+
+Resources:
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-privatelink-${ServiceName}-sg'
+      GroupDescription: !Sub 'Security group for PrivateLink consumer endpoint (${ServiceName})'
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-vpc-id'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp:
+            Fn::ImportValue: !Sub '${ProjectName}-vpc-cidr'
+          Description: !Sub 'Allow traffic to ${ServiceName} via PrivateLink'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-privatelink-${ServiceName}-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: auto-delete
+          Value: 'never'
+
+  VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-vpc-id'
+      ServiceName: !Ref EndpointServiceName
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: false
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+Outputs:
+  VPCEndpointId:
+    Description: VPC Endpoint ID
+    Value: !Ref VPCEndpoint
+    Export:
+      Name: !Sub '${ProjectName}-privatelink-consumer-${ServiceName}-id'

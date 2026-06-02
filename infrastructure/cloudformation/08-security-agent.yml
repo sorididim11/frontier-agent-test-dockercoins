@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Security Agent VPC Configuration - Security Group for Private Network Access'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name (passed by deploy.sh)
+
+Resources:
+  # Security Group for AWS Security Agent
+  # Security Agent가 VPC 내에서 Private Zone DNS를 resolve하고 앱에 접근하기 위한 SG
+  SecurityAgentSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-security-agent-sg'
+      GroupDescription: Security group for AWS Security Agent VPC access
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-vpc-id'
+      # Ingress: Security Agent는 인바운드 트래픽 불필요 (아웃바운드만 필요)
+      SecurityGroupIngress: []
+      # Egress: 앱 접근 및 AWS 서비스 통신용
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP access to applications
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS access to AWS services and applications
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+          Description: DNS TCP
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+          Description: DNS UDP
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-security-agent-sg'
+        - Key: Environment
+          Value: !Ref ProjectName
+        - Key: Purpose
+          Value: 'AWS Security Agent VPC Access'
+        - Key: auto-delete
+          Value: 'never'
+
+Outputs:
+  SecurityAgentSecurityGroupId:
+    Description: Security Group ID for AWS Security Agent
+    Value: !Ref SecurityAgentSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-security-agent-sg-id'

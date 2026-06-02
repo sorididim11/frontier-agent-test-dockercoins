@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<title>DockerCoins - Board</title>
+<script src="jquery.js"></script>
+<style>
+body { font-family: sans-serif; margin: 40px auto; max-width: 800px; }
+nav { background: #333; padding: 10px; margin-bottom: 20px; }
+nav a { color: #fff; margin-right: 15px; text-decoration: none; }
+.post { border: 1px solid #ddd; padding: 15px; margin-bottom: 10px; border-radius: 4px; }
+.post h3 { margin-top: 0; }
+.post .meta { color: #666; font-size: 0.9em; }
+.form-group { margin-bottom: 15px; }
+label { display: block; margin-bottom: 5px; font-weight: bold; }
+input[type="text"], textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+textarea { height: 100px; }
+button { padding: 10px 20px; background: steelblue; color: white; border: none; cursor: pointer; }
+.search-box { margin-bottom: 20px; }
+.search-box input { width: 70%; padding: 8px; }
+.search-box button { vertical-align: top; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/board">Board</a>
+  <a href="/admin">Admin</a>
+  <a href="/login">Login</a>
+</nav>
+
+<h1>Community Board</h1>
+
+<div class="search-box">
+  <form action="/board/search" method="GET">
+    <input type="text" name="q" placeholder="Search posts...">
+    <button type="submit">Search</button>
+  </form>
+</div>
+
+<h2>New Post</h2>
+<form method="POST" action="/board">
+  <div class="form-group">
+    <label>Title</label>
+    <input type="text" name="title" required>
+  </div>
+  <div class="form-group">
+    <label>Content (HTML allowed)</label>
+    <textarea name="content" required></textarea>
+  </div>
+  <button type="submit">Post</button>
+</form>
+
+<h2>Posts</h2>
+<div id="posts"></div>
+
+<script>
+$.getJSON('/api/posts', function(posts) {
+  posts.forEach(function(p) {
+    // A03/A08: stored XSS - content rendered as innerHTML without sanitization
+    var html = '<div class="post">';
+    html += '<h3>' + p.title + '</h3>';
+    html += '<div>' + p.content + '</div>';
+    html += '<div class="meta">by ' + p.username + ' | ' + p.created_at + '</div>';
+    html += '</div>';
+    $('#posts').append(html);
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+[
+    {
+        "ResourceType": "AWS::EKS::Nodegroup",
+        "LogicalResourceId": "EKSNodeGroup",
+        "ResourceIdentifier": {
+            "ClusterName": "devops-agent-test-cluster",
+            "NodegroupName": "devops-agent-test-nodegroup-v5"
+        }
+    }
+]

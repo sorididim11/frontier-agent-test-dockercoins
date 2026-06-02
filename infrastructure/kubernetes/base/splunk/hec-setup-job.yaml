@@ -1,0 +1,73 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: splunk-hec-setup
+  namespace: splunk
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-splunk
+          image: curlimages/curl:8.5.0
+          env:
+            - name: SPLUNK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: splunk-credentials
+                  key: SPLUNK_PASSWORD
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Splunk to be ready..."
+              until curl -sk -u "admin:${SPLUNK_PASSWORD}" \
+                https://splunk.splunk.svc.cluster.local/services/server/health/splunkd; do
+                echo "Splunk not ready, retrying in 5s..."
+                sleep 5
+              done
+              echo "Splunk is ready."
+      containers:
+        - name: setup
+          image: curlimages/curl:8.5.0
+          env:
+            - name: SPLUNK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: splunk-credentials
+                  key: SPLUNK_PASSWORD
+            - name: HEC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: splunk-credentials
+                  key: SPLUNK_HEC_TOKEN
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              SPLUNK=https://splunk.splunk.svc.cluster.local
+              AUTH="admin:${SPLUNK_PASSWORD}"
+
+              echo "=== Enabling HEC ==="
+              curl -sk -u $AUTH $SPLUNK/servicesNS/admin/splunk_httpinput/data/inputs/http/http \
+                -d disabled=0
+
+              echo "=== Creating indexes ==="
+              for idx in otel_traces otel_metrics otel_logs; do
+                echo "Creating index: $idx"
+                curl -sk -u $AUTH $SPLUNK/servicesNS/admin/search/data/indexes \
+                  -d name=$idx -d datatype=event || true
+              done
+
+              echo "=== Creating HEC token ==="
+              curl -sk -u $AUTH $SPLUNK/servicesNS/admin/splunk_httpinput/data/inputs/http \
+                -d name=otel-collector \
+                -d "token=${HEC_TOKEN}" \
+                -d index=otel_traces \
+                -d indexes=otel_traces,otel_metrics,otel_logs \
+                -d useACK=0 || true
+
+              echo "=== HEC setup complete ==="

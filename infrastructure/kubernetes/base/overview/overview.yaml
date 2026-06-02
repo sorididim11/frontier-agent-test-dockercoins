@@ -1,0 +1,172 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: overview
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: overview
+  namespace: overview
+  annotations:
+    eks.amazonaws.com/role-arn: "__OVERVIEW_ROLE_ARN__"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: overview-scenario-runner
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: overview-scenario-runner-binding
+subjects:
+  - kind: ServiceAccount
+    name: overview
+    namespace: overview
+roleRef:
+  kind: ClusterRole
+  name: overview-scenario-runner
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: overview-config
+  namespace: overview
+data:
+  EKS_CLUSTER_NAME: "__EKS_CLUSTER_NAME__"
+  AWS_REGION: "us-east-1"
+  EVENTS_TABLE: "__EVENTS_TABLE__"
+  RUNS_TABLE: "__RUNS_TABLE__"
+  SLACK_SECRET_NAME: "__SLACK_SECRET_NAME__"
+  WEBHOOK_SECRET_NAME: "__WEBHOOK_SECRET_NAME__"
+  WEBHOOK_FUNCTION_NAME: "__WEBHOOK_FUNCTION_NAME__"
+  ALARM_PREFIX: "__ALARM_PREFIX__"
+  PROJECT_NAME: "__PROJECT_NAME__"
+  MULTI_CLUSTER_CONFIG: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overview
+  namespace: overview
+  labels:
+    app: overview
+    app.kubernetes.io/name: overview
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: overview
+  template:
+    metadata:
+      labels:
+        app: overview
+        app.kubernetes.io/name: overview
+        app.kubernetes.io/part-of: Overview
+    spec:
+      serviceAccountName: overview
+      initContainers:
+      - name: kubeconfig-init
+        image: amazon/aws-cli:2.17.0
+        command: ["sh", "-c"]
+        args:
+          - |
+            if [ -z "$MULTI_CLUSTER_CONFIG" ]; then echo "Single-cluster mode"; exit 0; fi
+            echo "$MULTI_CLUSTER_CONFIG" | python3 -c "
+            import json, sys, subprocess
+            for c in json.load(sys.stdin):
+                cmd = ['aws','eks','update-kubeconfig','--name',c['name'],'--region',c.get('region','us-east-1'),'--alias',c['name'],'--kubeconfig','/kubeconfig/config']
+                if c.get('role_arn'): cmd.extend(['--role-arn',c['role_arn']])
+                print(f'Configuring {c[\"name\"]}...', flush=True)
+                subprocess.run(cmd, check=True)
+            "
+        envFrom:
+        - configMapRef:
+            name: overview-config
+        volumeMounts:
+        - name: kubeconfig
+          mountPath: /kubeconfig
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      containers:
+      - name: overview
+        image: overview:latest
+        command: ["gunicorn"]
+        args: ["--bind", "0.0.0.0:5003", "--workers", "1", "--threads", "8", "overview_app:app"]
+        ports:
+        - containerPort: 5003
+          name: overview
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: KUBECONFIG
+          value: "/kubeconfig/config"
+        envFrom:
+        - configMapRef:
+            name: overview-config
+        volumeMounts:
+        - name: kubeconfig
+          mountPath: /kubeconfig
+          readOnly: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5003
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5003
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: kubeconfig
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: overview
+  namespace: overview
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+spec:
+  type: LoadBalancer
+  selector:
+    app: overview
+  ports:
+  - name: overview
+    port: 80
+    targetPort: 5003
+    protocol: TCP

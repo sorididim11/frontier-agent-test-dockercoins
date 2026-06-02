@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'PrivateLink Provider — Exposes a K8s NLB-backed service as a VPC Endpoint Service'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+  ServiceName:
+    Type: String
+    Description: 'Service to expose (e.g. hasher, rng)'
+  NetworkLoadBalancerArn:
+    Type: String
+    Description: 'ARN of the NLB created by K8s LoadBalancer Service'
+  AllowedPrincipal:
+    Type: String
+    Description: 'Peer account ARN allowed to create endpoints (e.g. arn:aws:iam::222222222222:root)'
+
+Resources:
+  VPCEndpointService:
+    Type: AWS::EC2::VPCEndpointService
+    Properties:
+      AcceptanceRequired: false
+      NetworkLoadBalancerArns:
+        - !Ref NetworkLoadBalancerArn
+
+  VPCEndpointServicePermissions:
+    Type: AWS::EC2::VPCEndpointServicePermissions
+    Properties:
+      ServiceId: !Ref VPCEndpointService
+      AllowedPrincipals:
+        - !Ref AllowedPrincipal
+
+  NLBTargetSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub '${ProjectName}-eks-sg-id'
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp:
+        Fn::ImportValue: !Sub '${ProjectName}-vpc-cidr'
+      Description: !Sub 'PrivateLink traffic to ${ServiceName} NLB targets'
+
+Outputs:
+  EndpointServiceId:
+    Description: VPC Endpoint Service ID
+    Value: !Ref VPCEndpointService
+    Export:
+      Name: !Sub '${ProjectName}-privatelink-provider-${ServiceName}-id'

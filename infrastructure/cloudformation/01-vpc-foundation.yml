@@ -1,0 +1,534 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Test - Foundation Infrastructure (VPC, Networking)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Environment name for resource tagging
+  
+  ProjectName:
+    Type: String
+    Default: 'devops-agent-test'
+    Description: Project name for resource naming
+
+  VpcCidrPrefix:
+    Type: String
+    Default: '10.0'
+    Description: 'First two octets of VPC CIDR (e.g. 10.0 → 10.0.0.0/16, 10.1 → 10.1.0.0/16)'
+    AllowedPattern: '^\d{1,3}\.\d{1,3}$'
+    ConstraintDescription: 'Must be two octets like 10.0 or 10.1'
+
+Resources:
+  # VPC with proper tagging for Agent discovery
+  TestVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Sub '${VpcCidrPrefix}.0.0/16'
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'networking'
+        - Key: Tier
+          Value: 'foundation'
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-igw'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref TestVPC
+
+  # Public Subnets for ALB
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Sub '${VpcCidrPrefix}.1.0/24'
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet-1'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'networking'
+        - Key: SubnetType
+          Value: 'public'
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Sub '${VpcCidrPrefix}.2.0/24'
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet-2'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'networking'
+        - Key: SubnetType
+          Value: 'public'
+
+  # Private Subnets for ECS Services
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Sub '${VpcCidrPrefix}.11.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-private-subnet-1'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'networking'
+        - Key: SubnetType
+          Value: 'private'
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Sub '${VpcCidrPrefix}.12.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-private-subnet-2'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'networking'
+        - Key: SubnetType
+          Value: 'private'
+
+  # Database Subnets
+  DatabaseSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Sub '${VpcCidrPrefix}.21.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-database-subnet-1'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'database'
+        - Key: SubnetType
+          Value: 'database'
+
+  DatabaseSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Sub '${VpcCidrPrefix}.22.0/24'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-database-subnet-2'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'database'
+        - Key: SubnetType
+          Value: 'database'
+
+  # NAT Gateways for private subnet internet access
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nat-eip-1'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nat-eip-2'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nat-gateway-1'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nat-gateway-2'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-rt'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-private-rt-1'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-private-rt-2'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  # Database Route Table
+  DatabaseRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-database-rt'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+
+  DatabaseSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DatabaseRouteTable
+      SubnetId: !Ref DatabaseSubnet1
+
+  DatabaseSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DatabaseRouteTable
+      SubnetId: !Ref DatabaseSubnet2
+
+  # Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-alb-sg'
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref TestVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP access from internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS access from internet
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-alb-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'load-balancer'
+
+  EKSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-eks-sg'
+      GroupDescription: Security group for EKS worker nodes
+      VpcId: !Ref TestVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: HTTP access from ALB
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: HTTP access from ALB
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Sub '${VpcCidrPrefix}.0.0/16'
+          Description: SSH access within VPC
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound for EKS API
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eks-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'compute'
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-database-sg'
+      GroupDescription: Security group for RDS database
+      VpcId: !Ref TestVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EKSSecurityGroup
+          Description: PostgreSQL access from EKS worker nodes (defined SG)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !Sub '${VpcCidrPrefix}.11.0/24'
+          Description: PostgreSQL access from Private Subnet 1 (EKS nodes)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !Sub '${VpcCidrPrefix}.12.0/24'
+          Description: PostgreSQL access from Private Subnet 2 (EKS nodes)
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-database-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: App
+          Value: Foundation
+        - Key: auto-delete
+          Value: 'never'
+        - Key: Component
+          Value: 'database'
+
+Outputs:
+  VPCId:
+    Description: VPC ID for other stacks
+    Value: !Ref TestVPC
+    Export:
+      Name: !Sub '${ProjectName}-vpc-id'
+
+  VPCCidr:
+    Description: VPC CIDR block
+    Value: !Sub '${VpcCidrPrefix}.0.0/16'
+    Export:
+      Name: !Sub '${ProjectName}-vpc-cidr'
+  
+  PublicSubnet1Id:
+    Description: Public Subnet 1 ID
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub '${ProjectName}-public-subnet-1-id'
+  
+  PublicSubnet2Id:
+    Description: Public Subnet 2 ID
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub '${ProjectName}-public-subnet-2-id'
+  
+  PrivateSubnet1Id:
+    Description: Private Subnet 1 ID
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub '${ProjectName}-private-subnet-1-id'
+  
+  PrivateSubnet2Id:
+    Description: Private Subnet 2 ID
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub '${ProjectName}-private-subnet-2-id'
+  
+  DatabaseSubnet1Id:
+    Description: Database Subnet 1 ID
+    Value: !Ref DatabaseSubnet1
+    Export:
+      Name: !Sub '${ProjectName}-database-subnet-1-id'
+  
+  DatabaseSubnet2Id:
+    Description: Database Subnet 2 ID
+    Value: !Ref DatabaseSubnet2
+    Export:
+      Name: !Sub '${ProjectName}-database-subnet-2-id'
+  
+  ALBSecurityGroupId:
+    Description: ALB Security Group ID
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-alb-sg-id'
+  
+  EKSSecurityGroupId:
+    Description: EKS Security Group ID
+    Value: !Ref EKSSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-eks-sg-id'
+  
+  DatabaseSecurityGroupId:
+    Description: Database Security Group ID
+    Value: !Ref DatabaseSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-database-sg-id'
