@@ -175,7 +175,20 @@ cp config/member1-acc.env.example config/member1-acc.env
 ### 2. 전체 배포 (인프라 + 앱)
 
 ```bash
-./infrastructure/deploy.sh
+# 새 VPC 생성 (기본 CIDR: 10.0.0.0/16)
+./infrastructure/deploy.sh --profile my-profile --project my-project --region us-east-1
+
+# 다른 CIDR로 새 VPC 생성
+./infrastructure/deploy.sh --profile my-profile --project my-project --vpc-cidr-prefix 10.1
+
+# 기존 VPC 사용
+./infrastructure/deploy.sh --profile my-profile --project my-project \
+  --existing-vpc vpc-0abc1234 \
+  --existing-public-subnets subnet-pub1,subnet-pub2 \
+  --existing-private-subnets subnet-priv1,subnet-priv2
+
+# 다른 리전
+./infrastructure/deploy.sh --profile my-profile --project my-project --region ap-northeast-2
 ```
 
 ### 3. DockerCoins만 배포

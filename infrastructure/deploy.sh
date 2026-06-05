@@ -24,6 +24,11 @@ MULTI_ACCOUNT=false
 PEER_PROFILE=""
 PEER_PROJECT=""
 PROVIDER_SERVICES=""
+EXISTING_VPC_ID=""
+EXISTING_PUBLIC_SUBNET_1=""
+EXISTING_PUBLIC_SUBNET_2=""
+EXISTING_PRIVATE_SUBNET_1=""
+EXISTING_PRIVATE_SUBNET_2=""
 SKIP_INFRA=false
 SKIP_BUILD=false
 SKIP_K8S=false
@@ -51,6 +56,9 @@ usage() {
     echo "  --skip-k8s   Skip K8s resource deployment"
     echo "  --only UNIT  Deploy only one unit: foundation|agent|test-app|overview"
     echo "  --vpc-cidr-prefix PREFIX  VPC CIDR first two octets (default: 10.0 → 10.0.0.0/16)"
+    echo "  --existing-vpc VPC_ID    Use existing VPC instead of creating new one"
+    echo "  --existing-public-subnets S1,S2   Existing public subnet IDs (required with --existing-vpc)"
+    echo "  --existing-private-subnets S1,S2  Existing private subnet IDs (required with --existing-vpc)"
     echo "  --nodes      Desired node count (default: 3)"
     echo "  --multi-account         Enable PrivateLink cross-account mode"
     echo "  --peer-profile PROFILE  Peer account AWS CLI profile (required with --multi-account)"
@@ -78,6 +86,9 @@ while [[ $# -gt 0 ]]; do
         --project)  PROJECT_NAME="$2"; shift 2 ;;
         --region)   AWS_REGION="$2"; shift 2 ;;
         --vpc-cidr-prefix) VPC_CIDR_PREFIX="$2"; shift 2 ;;
+        --existing-vpc) EXISTING_VPC_ID="$2"; shift 2 ;;
+        --existing-public-subnets) IFS=',' read -r EXISTING_PUBLIC_SUBNET_1 EXISTING_PUBLIC_SUBNET_2 <<< "$2"; shift 2 ;;
+        --existing-private-subnets) IFS=',' read -r EXISTING_PRIVATE_SUBNET_1 EXISTING_PRIVATE_SUBNET_2 <<< "$2"; shift 2 ;;
         --skip-infra) SKIP_INFRA=true; shift ;;
         --skip-build) SKIP_BUILD=true; shift ;;
         --skip-k8s)   SKIP_K8S=true; shift ;;
@@ -239,8 +250,18 @@ deploy_stack() {
 # Foundation: VPC + EKS + RDS + Alarms + GitHub Actions + FIS
 deploy_foundation() {
     print_status "═══ Phase 1: VPC Foundation ═══"
+    local -a vpc_params=("ParameterKey=VpcCidrPrefix,ParameterValue=$VPC_CIDR_PREFIX")
+    if [[ -n "$EXISTING_VPC_ID" ]]; then
+        vpc_params+=(
+            "ParameterKey=ExistingVpcId,ParameterValue=$EXISTING_VPC_ID"
+            "ParameterKey=ExistingPublicSubnet1Id,ParameterValue=$EXISTING_PUBLIC_SUBNET_1"
+            "ParameterKey=ExistingPublicSubnet2Id,ParameterValue=$EXISTING_PUBLIC_SUBNET_2"
+            "ParameterKey=ExistingPrivateSubnet1Id,ParameterValue=$EXISTING_PRIVATE_SUBNET_1"
+            "ParameterKey=ExistingPrivateSubnet2Id,ParameterValue=$EXISTING_PRIVATE_SUBNET_2"
+        )
+    fi
     deploy_stack "${PROJECT_NAME}-vpc-foundation" "01-vpc-foundation.yml" \
-        "ParameterKey=VpcCidrPrefix,ParameterValue=$VPC_CIDR_PREFIX"
+        "${vpc_params[@]}"
 
     print_status "═══ Phase 2: EKS Platform ═══"
     deploy_stack "${PROJECT_NAME}-eks-platform" "02-eks-platform.yml"
@@ -850,7 +871,11 @@ main() {
     print_status "Profile: $AWS_PROFILE"
     print_status "Region:  $AWS_REGION"
     print_status "Nodes:   $NODE_COUNT"
-    print_status "VPC:     ${VPC_CIDR_PREFIX}.0.0/16"
+    if [[ -n "$EXISTING_VPC_ID" ]]; then
+        print_status "VPC:     $EXISTING_VPC_ID (existing)"
+    else
+        print_status "VPC:     ${VPC_CIDR_PREFIX}.0.0/16 (new)"
+    fi
     if [[ -n "$ONLY_UNIT" ]]; then
         print_status "Unit:    $ONLY_UNIT"
     fi

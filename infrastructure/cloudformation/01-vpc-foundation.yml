@@ -1,12 +1,35 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'DevOps Agent Test - Foundation Infrastructure (VPC, Networking)'
 
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: 'Project Settings'
+        Parameters:
+          - Environment
+          - ProjectName
+      - Label:
+          default: 'VPC Configuration — Create New or Use Existing'
+        Parameters:
+          - ExistingVpcId
+          - VpcCidrPrefix
+          - ExistingPublicSubnet1Id
+          - ExistingPublicSubnet2Id
+          - ExistingPrivateSubnet1Id
+          - ExistingPrivateSubnet2Id
+    ParameterLabels:
+      ExistingVpcId:
+        default: 'Existing VPC ID (leave empty to create new)'
+      VpcCidrPrefix:
+        default: 'VPC CIDR Prefix (only for new VPC)'
+
 Parameters:
   Environment:
     Type: String
     Default: 'devops-agent-test'
     Description: Environment name for resource tagging
-  
+
   ProjectName:
     Type: String
     Default: 'devops-agent-test'
@@ -15,14 +38,46 @@ Parameters:
   VpcCidrPrefix:
     Type: String
     Default: '10.0'
-    Description: 'First two octets of VPC CIDR (e.g. 10.0 → 10.0.0.0/16, 10.1 → 10.1.0.0/16)'
+    Description: 'First two octets of VPC CIDR (e.g. 10.0 → 10.0.0.0/16). Ignored if ExistingVpcId is set.'
     AllowedPattern: '^\d{1,3}\.\d{1,3}$'
     ConstraintDescription: 'Must be two octets like 10.0 or 10.1'
 
+  ExistingVpcId:
+    Type: String
+    Default: ''
+    Description: 'Existing VPC ID to use. Leave empty to create a new VPC.'
+
+  ExistingPublicSubnet1Id:
+    Type: String
+    Default: ''
+    Description: 'Existing Public Subnet 1 ID (required if ExistingVpcId is set)'
+
+  ExistingPublicSubnet2Id:
+    Type: String
+    Default: ''
+    Description: 'Existing Public Subnet 2 ID (required if ExistingVpcId is set)'
+
+  ExistingPrivateSubnet1Id:
+    Type: String
+    Default: ''
+    Description: 'Existing Private Subnet 1 ID (required if ExistingVpcId is set)'
+
+  ExistingPrivateSubnet2Id:
+    Type: String
+    Default: ''
+    Description: 'Existing Private Subnet 2 ID (required if ExistingVpcId is set)'
+
+Conditions:
+  CreateNewVpc: !Equals [!Ref ExistingVpcId, '']
+  UseExistingVpc: !Not [!Equals [!Ref ExistingVpcId, '']]
+
 Resources:
-  # VPC with proper tagging for Agent discovery
+  # ============================================================
+  # VPC (created only when ExistingVpcId is empty)
+  # ============================================================
   TestVPC:
     Type: AWS::EC2::VPC
+    Condition: CreateNewVpc
     Properties:
       CidrBlock: !Sub '${VpcCidrPrefix}.0.0/16'
       EnableDnsHostnames: true
@@ -44,6 +99,7 @@ Resources:
   # Internet Gateway
   InternetGateway:
     Type: AWS::EC2::InternetGateway
+    Condition: CreateNewVpc
     Properties:
       Tags:
         - Key: Name
@@ -57,13 +113,15 @@ Resources:
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateNewVpc
     Properties:
       InternetGatewayId: !Ref InternetGateway
       VpcId: !Ref TestVPC
 
-  # Public Subnets for ALB
+  # Public Subnets
   PublicSubnet1:
     Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       AvailabilityZone: !Select [0, !GetAZs '']
@@ -85,6 +143,7 @@ Resources:
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       AvailabilityZone: !Select [1, !GetAZs '']
@@ -104,9 +163,10 @@ Resources:
         - Key: SubnetType
           Value: 'public'
 
-  # Private Subnets for ECS Services
+  # Private Subnets
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       AvailabilityZone: !Select [0, !GetAZs '']
@@ -127,6 +187,7 @@ Resources:
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       AvailabilityZone: !Select [1, !GetAZs '']
@@ -148,6 +209,7 @@ Resources:
   # Database Subnets
   DatabaseSubnet1:
     Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       AvailabilityZone: !Select [0, !GetAZs '']
@@ -168,6 +230,7 @@ Resources:
 
   DatabaseSubnet2:
     Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       AvailabilityZone: !Select [1, !GetAZs '']
@@ -186,9 +249,10 @@ Resources:
         - Key: SubnetType
           Value: 'database'
 
-  # NAT Gateways for private subnet internet access
+  # NAT Gateways
   NatGateway1EIP:
     Type: AWS::EC2::EIP
+    Condition: CreateNewVpc
     DependsOn: InternetGatewayAttachment
     Properties:
       Domain: vpc
@@ -204,6 +268,7 @@ Resources:
 
   NatGateway2EIP:
     Type: AWS::EC2::EIP
+    Condition: CreateNewVpc
     DependsOn: InternetGatewayAttachment
     Properties:
       Domain: vpc
@@ -219,6 +284,7 @@ Resources:
 
   NatGateway1:
     Type: AWS::EC2::NatGateway
+    Condition: CreateNewVpc
     Properties:
       AllocationId: !GetAtt NatGateway1EIP.AllocationId
       SubnetId: !Ref PublicSubnet1
@@ -234,6 +300,7 @@ Resources:
 
   NatGateway2:
     Type: AWS::EC2::NatGateway
+    Condition: CreateNewVpc
     Properties:
       AllocationId: !GetAtt NatGateway2EIP.AllocationId
       SubnetId: !Ref PublicSubnet2
@@ -250,6 +317,7 @@ Resources:
   # Route Tables
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       Tags:
@@ -264,6 +332,7 @@ Resources:
 
   DefaultPublicRoute:
     Type: AWS::EC2::Route
+    Condition: CreateNewVpc
     DependsOn: InternetGatewayAttachment
     Properties:
       RouteTableId: !Ref PublicRouteTable
@@ -272,18 +341,21 @@ Resources:
 
   PublicSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet1
 
   PublicSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet2
 
   PrivateRouteTable1:
     Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       Tags:
@@ -298,6 +370,7 @@ Resources:
 
   DefaultPrivateRoute1:
     Type: AWS::EC2::Route
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref PrivateRouteTable1
       DestinationCidrBlock: 0.0.0.0/0
@@ -305,12 +378,14 @@ Resources:
 
   PrivateSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref PrivateRouteTable1
       SubnetId: !Ref PrivateSubnet1
 
   PrivateRouteTable2:
     Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       Tags:
@@ -325,6 +400,7 @@ Resources:
 
   DefaultPrivateRoute2:
     Type: AWS::EC2::Route
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref PrivateRouteTable2
       DestinationCidrBlock: 0.0.0.0/0
@@ -332,6 +408,7 @@ Resources:
 
   PrivateSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref PrivateRouteTable2
       SubnetId: !Ref PrivateSubnet2
@@ -339,6 +416,7 @@ Resources:
   # Database Route Table
   DatabaseRouteTable:
     Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpc
     Properties:
       VpcId: !Ref TestVPC
       Tags:
@@ -353,23 +431,27 @@ Resources:
 
   DatabaseSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref DatabaseRouteTable
       SubnetId: !Ref DatabaseSubnet1
 
   DatabaseSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref DatabaseRouteTable
       SubnetId: !Ref DatabaseSubnet2
 
-  # Security Groups
+  # ============================================================
+  # Security Groups (always created — attached to resolved VPC)
+  # ============================================================
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupName: !Sub '${ProjectName}-alb-sg'
       GroupDescription: Security group for Application Load Balancer
-      VpcId: !Ref TestVPC
+      VpcId: !If [CreateNewVpc, !Ref TestVPC, !Ref ExistingVpcId]
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
@@ -398,7 +480,7 @@ Resources:
     Properties:
       GroupName: !Sub '${ProjectName}-eks-sg'
       GroupDescription: Security group for EKS worker nodes
-      VpcId: !Ref TestVPC
+      VpcId: !If [CreateNewVpc, !Ref TestVPC, !Ref ExistingVpcId]
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 3000
@@ -413,7 +495,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: !Sub '${VpcCidrPrefix}.0.0/16'
+          CidrIp: !If [CreateNewVpc, !Sub '${VpcCidrPrefix}.0.0/16', '10.0.0.0/8']
           Description: SSH access within VPC
         - IpProtocol: tcp
           FromPort: 443
@@ -437,23 +519,13 @@ Resources:
     Properties:
       GroupName: !Sub '${ProjectName}-database-sg'
       GroupDescription: Security group for RDS database
-      VpcId: !Ref TestVPC
+      VpcId: !If [CreateNewVpc, !Ref TestVPC, !Ref ExistingVpcId]
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref EKSSecurityGroup
-          Description: PostgreSQL access from EKS worker nodes (defined SG)
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          CidrIp: !Sub '${VpcCidrPrefix}.11.0/24'
-          Description: PostgreSQL access from Private Subnet 1 (EKS nodes)
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          CidrIp: !Sub '${VpcCidrPrefix}.12.0/24'
-          Description: PostgreSQL access from Private Subnet 2 (EKS nodes)
+          Description: PostgreSQL access from EKS worker nodes
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-database-sg'
@@ -469,64 +541,64 @@ Resources:
 Outputs:
   VPCId:
     Description: VPC ID for other stacks
-    Value: !Ref TestVPC
+    Value: !If [CreateNewVpc, !Ref TestVPC, !Ref ExistingVpcId]
     Export:
       Name: !Sub '${ProjectName}-vpc-id'
 
   VPCCidr:
     Description: VPC CIDR block
-    Value: !Sub '${VpcCidrPrefix}.0.0/16'
+    Value: !If [CreateNewVpc, !Sub '${VpcCidrPrefix}.0.0/16', 'existing-vpc']
     Export:
       Name: !Sub '${ProjectName}-vpc-cidr'
-  
+
   PublicSubnet1Id:
     Description: Public Subnet 1 ID
-    Value: !Ref PublicSubnet1
+    Value: !If [CreateNewVpc, !Ref PublicSubnet1, !Ref ExistingPublicSubnet1Id]
     Export:
       Name: !Sub '${ProjectName}-public-subnet-1-id'
-  
+
   PublicSubnet2Id:
     Description: Public Subnet 2 ID
-    Value: !Ref PublicSubnet2
+    Value: !If [CreateNewVpc, !Ref PublicSubnet2, !Ref ExistingPublicSubnet2Id]
     Export:
       Name: !Sub '${ProjectName}-public-subnet-2-id'
-  
+
   PrivateSubnet1Id:
     Description: Private Subnet 1 ID
-    Value: !Ref PrivateSubnet1
+    Value: !If [CreateNewVpc, !Ref PrivateSubnet1, !Ref ExistingPrivateSubnet1Id]
     Export:
       Name: !Sub '${ProjectName}-private-subnet-1-id'
-  
+
   PrivateSubnet2Id:
     Description: Private Subnet 2 ID
-    Value: !Ref PrivateSubnet2
+    Value: !If [CreateNewVpc, !Ref PrivateSubnet2, !Ref ExistingPrivateSubnet2Id]
     Export:
       Name: !Sub '${ProjectName}-private-subnet-2-id'
-  
+
   DatabaseSubnet1Id:
-    Description: Database Subnet 1 ID
-    Value: !Ref DatabaseSubnet1
+    Description: Database Subnet 1 ID (empty if using existing VPC without DB subnets)
+    Value: !If [CreateNewVpc, !Ref DatabaseSubnet1, '']
     Export:
       Name: !Sub '${ProjectName}-database-subnet-1-id'
-  
+
   DatabaseSubnet2Id:
-    Description: Database Subnet 2 ID
-    Value: !Ref DatabaseSubnet2
+    Description: Database Subnet 2 ID (empty if using existing VPC without DB subnets)
+    Value: !If [CreateNewVpc, !Ref DatabaseSubnet2, '']
     Export:
       Name: !Sub '${ProjectName}-database-subnet-2-id'
-  
+
   ALBSecurityGroupId:
     Description: ALB Security Group ID
     Value: !Ref ALBSecurityGroup
     Export:
       Name: !Sub '${ProjectName}-alb-sg-id'
-  
+
   EKSSecurityGroupId:
     Description: EKS Security Group ID
     Value: !Ref EKSSecurityGroup
     Export:
       Name: !Sub '${ProjectName}-eks-sg-id'
-  
+
   DatabaseSecurityGroupId:
     Description: Database Security Group ID
     Value: !Ref DatabaseSecurityGroup
