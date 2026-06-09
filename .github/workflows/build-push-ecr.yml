@@ -1,0 +1,215 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'services/dockercoins/**'
+      - '.github/workflows/build-push-ecr.yml'
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to build (all, hasher, rng, worker, webui)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - hasher
+          - rng
+          - worker
+          - webui
+      environment:
+        description: 'Target AWS account'
+        required: true
+        default: 'member1-acc'
+        type: choice
+        options:
+          - member1-acc
+          - member2-acc
+
+env:
+  AWS_REGION: us-east-1
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'member1-acc' }}
+    outputs:
+      ecr_registry: ${{ steps.env-map.outputs.ecr_registry }}
+      project_name: ${{ steps.env-map.outputs.project_name }}
+      iam_role: ${{ steps.env-map.outputs.iam_role }}
+      cluster_name: ${{ steps.env-map.outputs.cluster_name }}
+      overlay_dir: ${{ steps.env-map.outputs.overlay_dir }}
+    steps:
+      - name: Derive variables from environment
+        id: env-map
+        run: |
+          ACCT="${{ vars.AWS_ACCOUNT_ID }}"
+          PRJ="${{ vars.PROJECT_NAME }}"
+          echo "ecr_registry=${ACCT}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
+          echo "project_name=${PRJ}" >> $GITHUB_OUTPUT
+          echo "iam_role=${{ vars.IAM_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}-github-actions-role', vars.AWS_ACCOUNT_ID, vars.PROJECT_NAME) }}" >> $GITHUB_OUTPUT
+          echo "cluster_name=${PRJ}-cluster" >> $GITHUB_OUTPUT
+          echo "overlay_dir=${{ github.event.inputs.environment || 'member1-acc' }}" >> $GITHUB_OUTPUT
+
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      hasher: ${{ steps.filter.outputs.hasher }}
+      rng: ${{ steps.filter.outputs.rng }}
+      worker: ${{ steps.filter.outputs.worker }}
+      webui: ${{ steps.filter.outputs.webui }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            hasher:
+              - 'services/dockercoins/hasher/**'
+            rng:
+              - 'services/dockercoins/rng/**'
+            worker:
+              - 'services/dockercoins/worker/**'
+            webui:
+              - 'services/dockercoins/webui/**'
+
+  build-hasher:
+    needs: [setup, detect-changes]
+    if: |
+      needs.detect-changes.outputs.hasher == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.service == 'all' || github.event.inputs.service == 'hasher')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.setup.outputs.iam_role }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push hasher
+        uses: docker/build-push-action@v5
+        with:
+          context: services/dockercoins/hasher
+          push: true
+          tags: |
+            ${{ needs.setup.outputs.ecr_registry }}/${{ needs.setup.outputs.project_name }}/hasher:${{ github.sha }}
+          platforms: linux/amd64
+
+  build-rng:
+    needs: [setup, detect-changes]
+    if: |
+      needs.detect-changes.outputs.rng == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.service == 'all' || github.event.inputs.service == 'rng')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.setup.outputs.iam_role }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push rng
+        uses: docker/build-push-action@v5
+        with:
+          context: services/dockercoins/rng
+          push: true
+          tags: |
+            ${{ needs.setup.outputs.ecr_registry }}/${{ needs.setup.outputs.project_name }}/rng:${{ github.sha }}
+          platforms: linux/amd64
+
+  build-worker:
+    needs: [setup, detect-changes]
+    if: |
+      needs.detect-changes.outputs.worker == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.service == 'all' || github.event.inputs.service == 'worker')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.setup.outputs.iam_role }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push worker
+        uses: docker/build-push-action@v5
+        with:
+          context: services/dockercoins/worker
+          push: true
+          tags: |
+            ${{ needs.setup.outputs.ecr_registry }}/${{ needs.setup.outputs.project_name }}/worker:${{ github.sha }}
+          platforms: linux/amd64
+
+  build-webui:
+    needs: [setup, detect-changes]
+    if: |
+      needs.detect-changes.outputs.webui == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.service == 'all' || github.event.inputs.service == 'webui')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.setup.outputs.iam_role }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push webui
+        uses: docker/build-push-action@v5
+        with:
+          context: services/dockercoins/webui
+          push: true
+          tags: |
+            ${{ needs.setup.outputs.ecr_registry }}/${{ needs.setup.outputs.project_name }}/webui:${{ github.sha }}
+          platforms: linux/amd64
+
+  deploy-to-eks:
+    needs: [setup, build-hasher, build-rng, build-worker, build-webui]
+    if: always() && (needs.build-hasher.result == 'success' || needs.build-rng.result == 'success' || needs.build-worker.result == 'success' || needs.build-webui.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.setup.outputs.iam_role }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ needs.setup.outputs.cluster_name }} --region ${{ env.AWS_REGION }}
+      - name: Deploy dockercoins
+        working-directory: infrastructure/kubernetes/overlays/${{ needs.setup.outputs.overlay_dir }}/dockercoins
+        run: |
+          TAG="${{ github.sha }}"
+          ECR="${{ needs.setup.outputs.ecr_registry }}"
+          PRJ="${{ needs.setup.outputs.project_name }}"
+          if [ "${{ needs.build-hasher.result }}" == "success" ]; then
+            kustomize edit set image hasher=${ECR}/${PRJ}/hasher:${TAG}
+          fi
+          if [ "${{ needs.build-rng.result }}" == "success" ]; then
+            kustomize edit set image rng=${ECR}/${PRJ}/rng:${TAG}
+          fi
+          if [ "${{ needs.build-worker.result }}" == "success" ]; then
+            kustomize edit set image worker=${ECR}/${PRJ}/worker:${TAG}
+          fi
+          if [ "${{ needs.build-webui.result }}" == "success" ]; then
+            kustomize edit set image webui=${ECR}/${PRJ}/webui:${TAG}
+          fi
+          kustomize build . | grep "image:" || true
+          kubectl apply -k .
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment -n dockercoins --timeout=300s || true
+          kubectl get pods -n dockercoins
